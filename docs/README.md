@@ -8,6 +8,7 @@ English · [한국어](ko/README.md) · [简体中文](zh-Hans/README.md) · [�
 - [LLM provider templates](llm-providers.md)
 - [Claude Code, Codex and Pi adapter](../adapters/agent/README.md)
 - [Traffic evidence](traffic-evidence.md)
+- [Blending and stealth](opsec-blend.md)
 - [Side questions](../sidequestion/README.md)
 - [Side-question context budgets](../sidequestion/CONTEXT_BUDGET.md)
 - [Historical side-question validation](../sidequestion/VALIDATION.md)

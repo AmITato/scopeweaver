@@ -150,6 +150,10 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 	if _, err := d.Exec(`UPDATE tasks SET company_id=$2,llm_profile_id=$3,active_llm_profile_id=$3 WHERE id=$1`, task.ID, companyID, llmProfileID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := d.Exec(`UPDATE tasks SET mode='op',cover_story='contractor doing QuickBooks token integration',
+house_style='{"branch":"^(DEV|TS)-[0-9]+$"}',stealth='{"rps":1,"burst":5}' WHERE id=$1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := d.Exec(`INSERT INTO task_llm_profiles(task_id,profile_id,position,status,last_error,exhausted_at,created_at,updated_at)
 VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmProfileID, exhaustedAt, chainCreatedAt); err != nil {
 		t.Fatal(err)
@@ -241,6 +245,15 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if nodes != 0 || assets != 0 || usage != 0 {
 		t.Fatalf("hot compaction left nodes=%d assets=%d usage=%d", nodes, assets, usage)
 	}
+	var resetMode, resetCover string
+	var resetHouseRaw, resetStealthRaw []byte
+	if err := d.QueryRow(`SELECT mode,cover_story,house_style,stealth FROM tasks WHERE id=$1`, task.ID).
+		Scan(&resetMode, &resetCover, &resetHouseRaw, &resetStealthRaw); err != nil {
+		t.Fatal(err)
+	}
+	if resetMode != TaskModePentest || resetCover != "" || string(resetHouseRaw) != "{}" || string(resetStealthRaw) != "{}" {
+		t.Fatalf("archive reset kept opsec: mode=%q cover=%q house=%s stealth=%s", resetMode, resetCover, resetHouseRaw, resetStealthRaw)
+	}
 	ready, err := d.GetTaskArchive(archive.ID)
 	if err != nil || ready == nil || ready.State != ArchiveReady {
 		t.Fatalf("ready archive = %+v, %v", ready, err)
@@ -285,6 +298,11 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	if live.Name != "cold task" || !live.Paused {
 		t.Fatalf("restored task metadata mismatch: %+v", live)
 	}
+	if live.Mode != TaskModeOp || live.CoverStory != "contractor doing QuickBooks token integration" {
+		t.Fatalf("restore lost opsec text: mode=%q cover=%q", live.Mode, live.CoverStory)
+	}
+	assertTaskJSON(t, live.HouseStyle, `{"branch":"^(DEV|TS)-[0-9]+$"}`)
+	assertTaskJSON(t, live.Stealth, `{"rps":1,"burst":5}`)
 	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1`, task.ExplorationID).Scan(&nodes); err != nil {
 		t.Fatal(err)
 	}

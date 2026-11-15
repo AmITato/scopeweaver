@@ -1,10 +1,12 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"github.com/Autumn-27/artex/locale"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -49,6 +51,15 @@ type Task struct {
 	// or inject the coverage block into the situation (scope remains). Company links
 	// (task_scope kind=company) are independent and never affected. See db/task_scope.go.
 	CoverageEnabled bool `json:"coverage_enabled"`
+	// Mode is the engagement profile: TaskModePentest (default, historical behaviour) or
+	// TaskModeOp (simulation/stealth). See docs/opsec-blend.md.
+	Mode string `json:"mode"`
+	// CoverStory is one line describing what the intrusion looks like from inside.
+	CoverStory string `json:"cover_story"`
+	// HouseStyle is the target's captured naming grammar as a JSON object.
+	HouseStyle json.RawMessage `json:"house_style"`
+	// Stealth is the per-host noise budget/backoff state as a JSON object.
+	Stealth json.RawMessage `json:"stealth"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -94,10 +105,56 @@ const MaxTaskCompanyCount = 32
 
 const taskCompanyAssetSource = "company"
 
+// Task engagement profiles. TaskModePentest is the default and keeps historical
+// behaviour; TaskModeOp enables the simulation pipeline in docs/opsec-blend.md.
+const (
+	TaskModePentest = "pentest"
+	TaskModeOp      = "op"
+)
+
 var (
 	ErrTaskCompanyIDsInvalid = locale.NewError("invalid task company ids")
 	ErrTaskCompanyNotFound   = locale.NewError("task company not found")
+	ErrTaskModeInvalid       = locale.NewError("invalid task mode")
+	ErrTaskOpsecInvalid      = locale.NewError("invalid task opsec payload")
 )
+
+// NormalizeTaskMode validates a mode enum value. Empty and whitespace-only input
+// mean the default pentest profile; the returned bool reports validity.
+func NormalizeTaskMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", TaskModePentest:
+		return TaskModePentest, true
+	case TaskModeOp:
+		return TaskModeOp, true
+	}
+	return "", false
+}
+
+// NormalizeTaskOpsecJSON validates one JSONB object option for house_style or
+// stealth. Nil/empty means "unchanged" (nil); a JSON null becomes the empty-object
+// default. Anything but an object is rejected.
+func NormalizeTaskOpsecJSON(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return json.RawMessage("{}"), nil
+	}
+	if trimmed[0] != '{' || !json.Valid(trimmed) {
+		return nil, ErrTaskOpsecInvalid
+	}
+	return append(json.RawMessage(nil), trimmed...), nil
+}
+
+// taskOpsecObject normalizes a stored JSONB column to an object for the API.
+func taskOpsecObject(raw []byte) json.RawMessage {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return json.RawMessage("{}")
+	}
+	return append(json.RawMessage(nil), raw...)
+}
 
 // NormalizeTaskCompanyIDs validates IDs and removes duplicates while retaining
 // the user's first-seen order.
@@ -155,6 +212,14 @@ type TaskCreateOptions struct {
 	// CoverageEnabled controls asset coverage; nil defaults to true so callers unaware of the switch
 	// (orchestration spawn and old APIs) preserve prior behavior. Web task creation may explicitly disable it.
 	CoverageEnabled *bool
+	// Mode selects the engagement profile; nil/empty defaults to TaskModePentest so legacy callers
+	// (and orchestration) keep historical behavior.
+	Mode *string
+	// CoverStory is trimmed; nil defaults to empty.
+	CoverStory *string
+	// HouseStyle/Stealth are JSON object options; nil defaults to '{}'. Non-object JSON is rejected.
+	HouseStyle json.RawMessage
+	Stealth    json.RawMessage
 	// InterceptRules are task-level asset rules inserted into task_intercept_rules in the task-creation transaction.
 	InterceptRules []TaskInterceptRuleInput
 }
@@ -202,6 +267,32 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	}
 	opts.PlanHeartbeatSeconds = normalizeHeartbeat(opts.PlanHeartbeatSeconds)
 	coverageEnabled := opts.CoverageEnabled == nil || *opts.CoverageEnabled
+	mode := TaskModePentest
+	if opts.Mode != nil {
+		normalized, ok := NormalizeTaskMode(*opts.Mode)
+		if !ok {
+			return nil, locale.Errorf("%w: mode must be %s or %s", ErrTaskModeInvalid, TaskModePentest, TaskModeOp)
+		}
+		mode = normalized
+	}
+	coverStory := ""
+	if opts.CoverStory != nil {
+		coverStory = strings.TrimSpace(*opts.CoverStory)
+	}
+	houseStyle, err := NormalizeTaskOpsecJSON(opts.HouseStyle)
+	if err != nil {
+		return nil, locale.Errorf("%w: house_style must be a JSON object", err)
+	}
+	if houseStyle == nil {
+		houseStyle = json.RawMessage("{}")
+	}
+	stealth, err := NormalizeTaskOpsecJSON(opts.Stealth)
+	if err != nil {
+		return nil, locale.Errorf("%w: stealth must be a JSON object", err)
+	}
+	if stealth == nil {
+		stealth = json.RawMessage("{}")
+	}
 	var categoryName string
 	if opts.CategoryID != nil {
 		if *opts.CategoryID <= 0 {
@@ -228,11 +319,13 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CompanyIDs:     append([]int64(nil), opts.CompanyIDs...),
 		TimeoutSeconds: opts.TimeoutSeconds, PlanHeartbeatSeconds: opts.PlanHeartbeatSeconds,
 		CoverageEnabled: coverageEnabled,
+		Mode:            mode, CoverStory: coverStory,
+		HouseStyle: houseStyle, Stealth: stealth,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, mode, cover_story, house_style, stealth)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, mode, coverStory, houseStyle, stealth).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	if opts.Language != "" {
@@ -353,13 +446,16 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), COALESCE(mode,'pentest'), COALESCE(cover_story,''), COALESCE(house_style,'{}'::jsonb), COALESCE(stealth,'{}'::jsonb), first_run_at, deadline_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt); err != nil {
+	var houseStyle, stealth []byte
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.Mode, &t.CoverStory, &houseStyle, &stealth, &t.FirstRunAt, &t.DeadlineAt); err != nil {
 		return nil, err
 	}
+	t.HouseStyle = taskOpsecObject(houseStyle)
+	t.Stealth = taskOpsecObject(stealth)
 	t.Pinned = t.PinnedAt != nil
 	return &t, nil
 }
@@ -399,22 +495,53 @@ ORDER BY (pinned_at IS NOT NULL) DESC, pinned_at DESC NULLS LAST, id DESC`)
 
 // TaskPatch updates task list metadata without changing execution state.
 type TaskPatch struct {
-	Name   *string
-	Pinned *bool
+	Name       *string
+	Pinned     *bool
+	Mode       *string
+	CoverStory *string
+	HouseStyle json.RawMessage
+	Stealth    json.RawMessage
 }
 
-// UpdateTask applies a partial task name/pin mutation and returns the updated row.
+// UpdateTask applies a partial task name/pin/opsec mutation and returns the updated row.
 // Re-pinning an already pinned task preserves its original position.
 func (d *DB) UpdateTask(id int64, patch TaskPatch) (*Task, error) {
+	mode := patch.Mode
+	if mode != nil {
+		normalized, ok := NormalizeTaskMode(*mode)
+		if !ok {
+			return nil, locale.Errorf("%w: mode must be %s or %s", ErrTaskModeInvalid, TaskModePentest, TaskModeOp)
+		}
+		mode = &normalized
+	}
+	coverStory := patch.CoverStory
+	if coverStory != nil {
+		trimmed := strings.TrimSpace(*coverStory)
+		coverStory = &trimmed
+	}
+	houseStyle, err := NormalizeTaskOpsecJSON(patch.HouseStyle)
+	if err != nil {
+		return nil, locale.Errorf("%w: house_style must be a JSON object", err)
+	}
+	stealth, err := NormalizeTaskOpsecJSON(patch.Stealth)
+	if err != nil {
+		return nil, locale.Errorf("%w: stealth must be a JSON object", err)
+	}
 	task, err := scanTask(d.QueryRow(`UPDATE tasks SET
 	name = CASE WHEN $2::boolean THEN $3 ELSE name END,
 	pinned_at = CASE
 		WHEN $4::boolean IS NULL THEN pinned_at
 		WHEN $4::boolean THEN COALESCE(pinned_at, now())
 		ELSE NULL
-	END
+	END,
+	mode = CASE WHEN $5::boolean THEN $6 ELSE mode END,
+	cover_story = CASE WHEN $7::boolean THEN $8 ELSE cover_story END,
+	house_style = CASE WHEN $9::boolean THEN $10::jsonb ELSE house_style END,
+	stealth = CASE WHEN $11::boolean THEN $12::jsonb ELSE stealth END
 WHERE id=$1 AND deleted_at IS NULL
-RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned))
+RETURNING `+taskCols, id, patch.Name != nil, patch.Name, patch.Pinned,
+		mode != nil, mode, coverStory != nil, coverStory,
+		houseStyle != nil, houseStyle, stealth != nil, stealth))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

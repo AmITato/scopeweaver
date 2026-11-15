@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"github.com/Autumn-27/artex/locale"
 	"net"
@@ -341,6 +342,53 @@ func (s *AssetStore) CoverageEnabled(taskID int64) bool {
 	}
 	return enabled
 }
+
+// TaskOpsec is a task's engagement profile and stealth context (tasks.mode,
+// cover_story, house_style, stealth). The prompt layer reads it once per round.
+type TaskOpsec struct {
+	Mode       string          `json:"mode"`
+	CoverStory string          `json:"cover_story"`
+	HouseStyle json.RawMessage `json:"house_style"`
+	Stealth    json.RawMessage `json:"stealth"`
+}
+
+// DefaultTaskOpsec returns the historical profile used when a task row is
+// missing, unreadable, or still unknown to older callers.
+func DefaultTaskOpsec() TaskOpsec {
+	return TaskOpsec{Mode: TaskModePentest, HouseStyle: json.RawMessage("{}"), Stealth: json.RawMessage("{}")}
+}
+
+// IsOp reports whether the op simulation profile is active.
+func (o TaskOpsec) IsOp() bool { return o.Mode == TaskModeOp }
+
+// TaskOpsec reads a task's engagement profile. Missing row, error, or an unknown
+// mode → the pentest defaults (fail open to historical behavior); taskID<=0 →
+// defaults. Unlike CoverageEnabled this lives on DB because prompt builders in
+// other packages may only hold the DB.
+func (d *DB) TaskOpsec(taskID int64) TaskOpsec {
+	out := DefaultTaskOpsec()
+	if taskID <= 0 {
+		return out
+	}
+	var houseStyle, stealth []byte
+	err := d.QueryRow(`SELECT COALESCE(mode,'pentest'), COALESCE(cover_story,''),
+COALESCE(house_style,'{}'::jsonb), COALESCE(stealth,'{}'::jsonb)
+FROM tasks WHERE id=$1`, taskID).Scan(&out.Mode, &out.CoverStory, &houseStyle, &stealth)
+	if err != nil {
+		return DefaultTaskOpsec()
+	}
+	if normalized, ok := NormalizeTaskMode(out.Mode); ok {
+		out.Mode = normalized
+	} else {
+		out.Mode = TaskModePentest
+	}
+	out.HouseStyle = taskOpsecObject(houseStyle)
+	out.Stealth = taskOpsecObject(stealth)
+	return out
+}
+
+// TaskOpsec is the AssetStore form for prompt builders that already hold one.
+func (s *AssetStore) TaskOpsec(taskID int64) TaskOpsec { return s.db.TaskOpsec(taskID) }
 
 // task_scope→assets match predicate, reused by the count / by-type / untested queries. $1=taskID.
 const covTargetCTE = `

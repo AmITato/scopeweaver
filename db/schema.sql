@@ -533,6 +533,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_seconds INTEGER NOT NULL DEFAULT 0,
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
+    mode           TEXT NOT NULL DEFAULT 'pentest' CHECK (mode IN ('pentest','op')),
+    cover_story    TEXT NOT NULL DEFAULT '',
+    house_style    JSONB NOT NULL DEFAULT '{}',
+    stealth        JSONB NOT NULL DEFAULT '{}',
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -555,6 +559,13 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false
 -- and exposes add_task_scope/list_untested_assets to agents; false disables all of these (see task_scope.go).
 -- Existing tasks default true. Company links (task_scope kind=company) are independent of this switch.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
+-- Engagement profile and stealth context. mode='pentest' keeps historical behaviour; 'op'
+-- enables the simulation pipeline, cover story, house style and noise budget (docs/opsec-blend.md §4).
+-- All defaulted so existing tasks and unaware callers behave exactly as before.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'pentest' CHECK (mode IN ('pentest','op'));
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS cover_story TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS house_style JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS stealth JSONB NOT NULL DEFAULT '{}';
 -- queued_at makes admission FIFO reflect the actual enqueue order rather than the
 -- task creation order. queue_mode distinguishes first bootstrap from resuming an
 -- exploration that already owns goals/history.

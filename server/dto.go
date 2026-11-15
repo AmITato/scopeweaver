@@ -63,6 +63,10 @@ type TaskDTO struct {
 	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
 	CompanyIDs         []int64            `json:"company_ids"`
 	CoverageEnabled    bool               `json:"coverage_enabled"` // Asset-coverage feature flag, fixed at creation.
+	Mode               string             `json:"mode"`             // Engagement profile: pentest (default) or op.
+	CoverStory         string             `json:"cover_story"`      // One line describing what the intrusion looks like from inside.
+	HouseStyle         json.RawMessage    `json:"house_style"`      // Captured target naming grammar (JSON object).
+	Stealth            json.RawMessage    `json:"stealth"`          // Per-host noise budget/backoff state (JSON object).
 }
 
 // FindingSeverityDTO counts task findings by critical/high/medium/low severity.
@@ -136,6 +140,10 @@ func taskDTO(t *Task, status string) TaskDTO {
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,
+		Mode:               lifecycle.Mode,
+		CoverStory:         lifecycle.CoverStory,
+		HouseStyle:         lifecycle.HouseStyle,
+		Stealth:            lifecycle.Stealth,
 	}
 }
 

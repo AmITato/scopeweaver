@@ -3558,4 +3558,11 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   engagementDefaultsTitle: "案件の既定値",
   engagementDefaultsDesc: "新しいタスクが開始するプロファイルです。<b>ペンテスト</b>は現在のカバレッジ優先の動作を維持し、<b>作戦</b>は監視される対象を想定してステルス帯域予算と残留物の追跡を適用します。",
   defaultMode: "既定のモード",
+  egressTitle: "外向き帯域予算",
+  egressDesc: "<b>ローカルプロキシ</b>で適用する<b>ホスト別リクエストレート制限</b>です。<b>すべてのタスク</b>に適用され、対象への接続を平準化するため、スキャンが IP 単位のスロットリングに掛かりにくくなります。<b>0 で無効</b>です。バーストは、持続レートが適用される前に短時間で通過できるリクエスト数です。",
+  egressRpsLabel: "1 秒あたりのリクエスト数",
+  egressBurstLabel: "バースト",
+  egressOff: "無効: ホスト別の制限はなく、タスクは最大速度で対象に到達します。",
+  egressSaved: "外向き帯域予算を保存しました",
+  egressInvalid: "1 秒あたりのリクエスト数は 0 以上、バーストは 1 以上の整数で入力してください。",
 };

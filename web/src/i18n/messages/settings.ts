@@ -46,6 +46,13 @@ export const en = {
   engagementDefaultsTitle: "Engagement defaults",
   engagementDefaultsDesc: "The profile new tasks start with. <b>Pentest</b> keeps today’s coverage-first behaviour; <b>Op</b> models a watched target with stealth budgets and residue tracking.",
   defaultMode: "Default mode",
+  egressTitle: "Egress budget",
+  egressDesc: "A <b>per-host request rate limit</b> enforced in the <b>local proxy</b>. It applies to <b>all tasks</b> and smooths every target connection, so scans do not trip per-IP throttling. <b>0 disables it.</b> The burst is how many requests may pass in a short spike before the sustained rate applies.",
+  egressRpsLabel: "Requests per second",
+  egressBurstLabel: "Burst",
+  egressOff: "Off: no per-host limit; tasks reach targets at full speed.",
+  egressSaved: "Egress budget saved",
+  egressInvalid: "Enter 0 or more requests per second and a whole-number burst of at least 1.",
 };
 export const ko: Record<keyof typeof en, string> = {
   judgeUsageTitle: "승인 토큰 사용량",
@@ -94,4 +101,11 @@ export const ko: Record<keyof typeof en, string> = {
   engagementDefaultsTitle: "참여 기본값",
   engagementDefaultsDesc: "새 작업이 시작할 프로필입니다. <b>펜테스트</b>는 지금의 범위 우선 동작을 유지하고, <b>작전</b>은 감시당하는 대상을 전제로 은밀 대역폭 예산과 잔여물 추적을 적용합니다.",
   defaultMode: "기본 모드",
+  egressTitle: "송신 대역폭 예산",
+  egressDesc: "<b>대상 호스트별 요청 속도 제한</b>이며 <b>로컬 프록시</b>에서 적용합니다. <b>모든 작업</b>에 적용되어 대상 연결 속도를 고르게 하므로 스캔이 IP별 스로틀링에 걸리지 않습니다. <b>0이면 끕니다.</b> 버스트는 지속 속도가 적용되기 전에 짧은 순간 허용되는 요청 수입니다.",
+  egressRpsLabel: "초당 요청 수",
+  egressBurstLabel: "버스트",
+  egressOff: "꺼짐: 호스트별 제한이 없으며 작업이 최대 속도로 대상을 향합니다.",
+  egressSaved: "송신 대역폭 예산을 저장했습니다",
+  egressInvalid: "초당 요청 수는 0 이상, 버스트는 1 이상의 정수로 입력하세요.",
 };

@@ -947,6 +947,10 @@ export interface Settings {
   // Global target-traffic proxy supports HTTP/HTTPS/SOCKS5 and user:pass. With capture enabled it is
   // the MITM upstream; otherwise injected into Agent Bash/WebFetch. Empty means direct.
   global_proxy?: string;
+  // Per-host egress rate limit enforced in the local proxy for every task; 0 disables it.
+  // Burst allows a short spike above the sustained rate and defaults to 5.
+  egress_rps?: number;
+  egress_burst?: number;
   python_interpreter?: string; // Custom-script Python interpreter path; empty means runtime detection.
   workers?: number; // Worker concurrency defaults to 3 and affects subsequently started tasks.
   // Task concurrency cap: disabled means unlimited; excess new tasks queue and start when slots open.

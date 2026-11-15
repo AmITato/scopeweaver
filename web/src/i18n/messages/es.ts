@@ -128,7 +128,14 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   "judgeLoadFailed": "No se pudieron cargar los ajustes de aprobación guardados; se ha desactivado el guardado para evitar sobrescribirlos con valores predeterminados.",
   "engagementDefaultsTitle": "Valores predeterminados de la participación",
   "engagementDefaultsDesc": "Perfil con el que empiezan las tareas nuevas. <b>Pentest</b> mantiene el comportamiento actual centrado en la cobertura; <b>Op</b> modela un objetivo vigilado con presupuestos de sigilo y seguimiento de residuos.",
-  "defaultMode": "Modo predeterminado"
+  "defaultMode": "Modo predeterminado",
+  "egressTitle": "Presupuesto de salida",
+  "egressDesc": "Límite de <b>tasa de peticiones por host</b> aplicado en el <b>proxy local</b>. Afecta a <b>todas las tareas</b> y suaviza cada conexión al objetivo, para que los escaneos no activen la limitación por IP. <b>0 lo desactiva.</b> El burst es cuántas peticiones pueden pasar en un pico breve antes de aplicarse la tasa sostenida.",
+  "egressRpsLabel": "Peticiones por segundo",
+  "egressBurstLabel": "Burst",
+  "egressOff": "Desactivado: sin límite por host; las tareas alcanzan los objetivos a máxima velocidad.",
+  "egressSaved": "Presupuesto de salida guardado",
+  "egressInvalid": "Introduce 0 o más peticiones por segundo y un burst entero de al menos 1."
 };
 import type { en as englishSource } from './english.ts';
 export const english: Record<keyof typeof englishSource, string> = {

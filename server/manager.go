@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -292,6 +293,11 @@ const (
 	settingGlobalProxy = "global_proxy"
 	settingWorkers     = "workers"
 	settingLLMRecord   = "llm_record"
+	// settingEgressRPS/settingEgressBurst are the per-host egress budget enforced
+	// inside the MITM proxy: sustained requests/second per target host (0 = off)
+	// and the token-bucket burst (default 5). Independent of traffic capture.
+	settingEgressRPS   = "egress_rps"
+	settingEgressBurst = "egress_burst"
 	// LLM failover is disabled by default. When enabled, agents using the globally active profile
 	// switch to the next profile on insufficient balance, invalid keys, rate limits, or service failures.
 	// settingLLMPoolBindFallback matters only with failover enabled. By default, an explicit agent/task
@@ -320,6 +326,8 @@ const (
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
 	// is enabled but no explicit limit was saved.
 	defaultConcurrencyLimit = 5
+	// defaultEgressBurst is the token-bucket capacity when egress_burst is unset.
+	defaultEgressBurst = 5
 )
 
 // ConcurrencyLimit returns whether the simultaneous-running-task cap is enabled and
@@ -369,6 +377,49 @@ func (m *Manager) SetWorkers(n int) error {
 		return locale.Errorf("workers must be greater than zero")
 	}
 	return m.pg.SetSetting(settingWorkers, strconv.Itoa(n))
+}
+
+// EgressBudget returns the configured per-host egress budget (rps, burst). rps 0
+// means no budget. Invalid stored values fall back to "off"/default burst.
+func (m *Manager) EgressBudget() (rps float64, burst int) {
+	burst = defaultEgressBurst
+	if v, ok, err := m.pg.GetSetting(settingEgressRPS); err == nil && ok {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f > 0 {
+			rps = f
+		}
+	}
+	if v, ok, err := m.pg.GetSetting(settingEgressBurst); err == nil && ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			burst = n
+		}
+	}
+	return rps, burst
+}
+
+// SetEgressBudget persists and applies the per-host egress budget. rps 0 disables
+// it (and clears its counters); burst <=0 falls back to the default. Callers must
+// rebuild the agents (applyLLM) afterwards, because the proxy address and CA are
+// injected into their bash env at build time.
+func (m *Manager) SetEgressBudget(rps float64, burst int) error {
+	if math.IsNaN(rps) || math.IsInf(rps, 0) || rps < 0 {
+		return locale.Errorf("egress_rps must be zero (off) or greater")
+	}
+	if burst <= 0 {
+		burst = defaultEgressBurst
+	}
+	if err := m.pg.SetSetting(settingEgressRPS, strconv.FormatFloat(rps, 'f', -1, 64)); err != nil {
+		return err
+	}
+	if err := m.pg.SetSetting(settingEgressBurst, strconv.Itoa(burst)); err != nil {
+		return err
+	}
+	if m.traffic != nil {
+		m.traffic.SetBudget(rps, burst)
+	}
+	// With capture off, turning the budget on (or off) changes whether agents and
+	// the browser MCP get the proxy at all — re-sync it like the capture toggle.
+	m.syncBrowserMCPProxy()
+	return nil
 }
 
 // LLMMaxConcurrent returns the per-profile cap on simultaneous in-flight LLM
@@ -470,7 +521,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		}
 	}
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording
-	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
+	// proxy (via m.ProxyAddr, which honors the capture toggle and the egress budget).
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
 	// LLM recording flag, disabled by default and read by the recorder on every call.
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
@@ -501,9 +552,18 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			log.Printf(locale.Text(locale.ServerDefault(), "[proxy] Invalid global proxy %q ignored: %v"), m.globalProxy, err)
 		}
 	}
+	// Per-host egress budget (default: off). Applied to the proxy here so a
+	// budget-only engagement works with capture off; the proxy is what enforces it.
+	if m.traffic != nil {
+		if rps, burst := m.EgressBudget(); rps > 0 {
+			m.traffic.SetBudget(rps, burst)
+		}
+		m.traffic.SetCapture(m.trafficOn)
+	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
-	// restart with capture already on keeps Playwright routed through the proxy.
+	// restart with capture or an egress budget already on keeps Playwright routed
+	// through the proxy.
 	m.syncBrowserMCPProxy()
 	return m, nil
 }
@@ -518,6 +578,7 @@ func (m *Manager) TrafficEnabled() bool {
 
 // SetTrafficEnabled persists and applies the traffic-capture toggle. Callers must
 // rebuild the agents (applyLLM) afterwards so the new proxy/tools/prompt take hold.
+// The budget is independent of this: with capture off the proxy still throttles.
 func (m *Manager) SetTrafficEnabled(on bool) error {
 	if err := m.pg.SetBool(settingTrafficCapture, on); err != nil {
 		return err
@@ -525,6 +586,9 @@ func (m *Manager) SetTrafficEnabled(on bool) error {
 	m.mu.Lock()
 	m.trafficOn = on
 	m.mu.Unlock()
+	if m.traffic != nil {
+		m.traffic.SetCapture(on)
+	}
 	// Inject (on) or strip (off) the recording proxy + CA on the browser MCP so
 	// Playwright routes through the MITM. Must run after the flag flip above, since
 	// ProxyAddr/ProxyCACert honor it. putSettings rebuilds agents next (applyLLM),
@@ -699,10 +763,11 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 const browserMCPName = "browser"
 
 // syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
-// the current traffic-capture state: capture on → route Playwright through the
-// recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
+// the current state: proxy in play (capture on, or an egress budget) → route
+// Playwright through the recording proxy (--proxy-server) and trust its MITM CA
+// (NODE_EXTRA_CA_CERTS); neither → strip both. Idempotent, and a no-op if the user
+// deleted/renamed the MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert
+// take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {
@@ -791,7 +856,8 @@ func encodeJSON(v any) json.RawMessage {
 // HostTools are runtime host-provided tools added to EVERY agent's base list (via
 // ToolAugment); the tools table then filters them per-agent binding. Currently the
 // traffic tools, gated by the global capture switch: empty when capture is off, so
-// no agent gets traffic_search/traffic_get regardless of binding.
+// no agent gets traffic_search/traffic_get regardless of binding — even when an
+// egress budget keeps the proxy itself in play.
 func (m *Manager) HostTools(langs ...locale.Lang) []actool.CoreTool {
 	if m.traffic == nil || !m.TrafficEnabled() {
 		return nil
@@ -804,15 +870,15 @@ func (m *Manager) PG() *pgdb.DB              { return m.pg }
 func (m *Manager) Traffic() *traffic.Traffic { return m.traffic }
 
 // ProxyAddr returns the egress proxy address agents route target traffic through:
-//   - capture ON  → the recording MITM proxy (which itself exits via the global
-//     proxy when one is set); agents also get its CA (see ProxyCACert).
-//   - capture OFF → the global egress proxy directly (empty CA — real target
-//     certs), or "" when no global proxy is set (direct, no recording).
+//   - capture ON, or an egress budget ON → the MITM proxy (which itself exits via
+//     the global proxy when one is set); agents also get its CA (see ProxyCACert).
+//   - neither → the global egress proxy directly (empty CA — real target certs),
+//     or "" when no global proxy is set (direct, no recording, no throttling).
 //
-// So the global proxy takes effect in both modes: at the MITM's upstream when
-// capturing, in the agent's own bash env / WebFetch when not.
+// So the global proxy takes effect in both modes: at the MITM's upstream when the
+// proxy is in play, in the agent's own bash env / WebFetch when it is not.
 func (m *Manager) ProxyAddr() string {
-	if m.traffic != nil && m.TrafficEnabled() {
+	if m.traffic != nil && (m.TrafficEnabled() || m.traffic.BudgetOn()) {
 		return m.traffic.ProxyAddr()
 	}
 	m.mu.RLock()
@@ -821,12 +887,11 @@ func (m *Manager) ProxyAddr() string {
 }
 
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
-// the egress proxy. Non-empty ONLY when traffic capture is on (the MITM re-signs
-// certs): the global proxy used directly (capture off) is a plain forwarder that
-// preserves real target certs, so no custom CA is needed there. Its emptiness is
-// also the worker's "recording off" signal (see workerSystem).
+// the egress proxy. Non-empty whenever the MITM is in play (capture on OR an egress
+// budget): it re-signs certs. The global proxy used directly (neither) is a plain
+// forwarder that preserves real target certs, so no custom CA is needed there.
 func (m *Manager) ProxyCACert() string {
-	if m.traffic == nil || !m.TrafficEnabled() {
+	if m.traffic == nil || (!m.TrafficEnabled() && !m.traffic.BudgetOn()) {
 		return ""
 	}
 	return m.traffic.CACertPath()

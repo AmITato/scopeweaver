@@ -79,6 +79,7 @@ type Worker struct {
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
 	injectConstraints func() bool
+	recordingOn       bool // traffic capture is on (traffic_* tools exist)
 	// profileFn resolves this task's engagement profile ("pentest" default, "op"
 	// stealth). Read per run so a task profile switch needs no rebuild.
 	profileFn func() string
@@ -158,6 +159,13 @@ func (w *Worker) profile() string { return resolveProfile(w.profileFn) }
 
 // Profile reports the resolved engagement profile (tests and diagnostics).
 func (w *Worker) Profile() string { return w.profile() }
+
+// SetRecording says whether traffic capture (and therefore the traffic_* tools)
+// is on. Separate from the proxy: an egress budget alone re-signs certificates
+// but records nothing.
+func (w *Worker) SetRecording(on bool) { w.recordingOn = on }
+
+func (w *Worker) recording() bool { return w.recordingOn }
 
 // SetRunTimeout configures the per-intent wall-clock budget for the main
 // exploration (0 = unlimited). When it fires, the SDK settlement phase still runs
@@ -293,12 +301,13 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string, langs ...locale.Lang) string {
+func workerSystem(proxyAddr, caCert string, recording bool, dataDir, runDir string, langs ...locale.Lang) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()}, langs...)
-	// caCert is present only when the recording MITM is on, which is exactly when
-	// the traffic_* tools are registered — so it gates the traffic-tool note.
+	// recording (traffic capture) gates the traffic-tool note. It is NOT the CA:
+	// with an egress budget but capture off the proxy still re-signs certificates,
+	// yet traffic_search/traffic_get do not exist.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "", langs...) + workerArtifactSpec(runDir, langs...)
+	return body + workerTrafficBlock(recording, langs...) + workerArtifactSpec(runDir, langs...)
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -401,7 +410,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir, locale.FromContext(ctx))
+	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.recording(), w.workDir, runDir, locale.FromContext(ctx))
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts, locale.FromContext(ctx)) // Inject operating constraints for strict worker compliance.
 	}

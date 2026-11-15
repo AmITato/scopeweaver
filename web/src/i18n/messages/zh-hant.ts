@@ -3452,4 +3452,11 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   engagementDefaultsTitle: "專案預設值",
   engagementDefaultsDesc: "新任務啟動時使用的模式。<b>滲透測試</b>維持目前的覆蓋優先行為；<b>行動</b>以被監視的目標建模，套用隱蔽限速預算與殘留物追蹤。",
   defaultMode: "預設模式",
+  egressTitle: "出站限速預算",
+  egressDesc: "由<b>本機代理</b>強制執行的<b>依主機請求速率限制</b>，作用於<b>所有任務</b>並平滑到目標的連線，避免掃描觸發依 IP 的限流。<b>0 表示關閉。</b>突發值是持續速率生效前允許通過的短時請求數。",
+  egressRpsLabel: "每秒請求數",
+  egressBurstLabel: "突發",
+  egressOff: "已關閉：沒有依主機限速，任務會以最高速度存取目標。",
+  egressSaved: "出站限速預算已儲存",
+  egressInvalid: "請輸入 0 或更大的每秒請求數，以及不小於 1 的整數突發值。",
 };

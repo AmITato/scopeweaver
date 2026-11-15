@@ -408,14 +408,17 @@ predicate compounds it, so pair it with an explicit override and a warning activ
 
 ### 7.1 Enforcement point
 
-Agents write arbitrary shell, so prose alone cannot hold a budget. Every HTTP request must leave
-through the existing sandbox hook: `BashEnv` (`agent/worker.go:456`, `agent/chat.go:162`,
+Agents write arbitrary shell, so prose alone cannot hold a budget. Every HTTP request leaves through
+the existing sandbox hook: `BashEnv` (`agent/worker.go:456`, `agent/chat.go:162`,
 `agent/mainagent.go:147`, `agent/planner.go:408`) → `third_party/norma/harness/tools.go:95`.
 
 Two additions:
 
-1. `HTTP(S)_PROXY` points at a per-task counting listener (the existing MITM proxy extended, not a
-   second proxy) that applies the bucket and records the counters.
+1. The existing MITM proxy enforces the bucket (`traffic/budget.go`) and counts per host. It is now
+   usable with capture off: `ProxyAddr`/`ProxyCACert` return the proxy when capture **or** the budget
+   is on, and `record()` returns early when capture is off. Host tools stay capture-only; the worker
+   prompt is gated on capture, not on the CA, so it never advertises `traffic_*` when they are absent
+   (`agent/worker.go` `SetRecording`).
 2. A wrapper directory first on `PATH` rewrites known scanners to quiet defaults when the agent omits
    them: `nuclei -rate-limit`, `ffuf -rate`/`-p`, `feroxbuster --rate-limit`,
    `nmap -T2 --max-rate`, `masscan --rate`, `sqlmap --delay --threads=1`, `hydra -t`.
@@ -424,23 +427,31 @@ Two additions:
 
 ### 7.2 Budget
 
-Per host, default `op` values: 1 rps sustained, burst 5, concurrency 1. Global daily cap per target.
-Jitter 30–70% on inter-request delay. Budget is per host, not per worker: 50 workers share one bucket.
+Settings `egress_rps` (default 0 = off) and `egress_burst` (default 5) are process-wide and per target
+host, so every task and worker shares one bucket. The bucket refills at the host's effective rate; a
+waiter sleeps at most 2 s so a deep queue degrades instead of hanging. Host state is capped at 512
+entries with idle pruning.
+
+A suggested op value is 1 rps with burst 5. Jitter and a per-target daily cap are not implemented yet.
 
 ### 7.3 Adaptive backoff
 
-The proxy updates `task_host_budget` from every response. A 429, a captcha body or a WAF block halves
-the host rate for 10 minutes, opens a cooldown and rotates the host identity. Three consecutive
-blocks stop the host and raise a planner hint. Recovery is gradual (halve again at most twice).
+A 429 starts a 60 s cooldown for that host and halves its rate for 10 minutes (floor `rps/4`); the
+third consecutive 403 does the same, and any 2xx/3xx clears the streak. `BudgetSnapshot` exposes
+requests, 429s, 403s and cooldown per host for the Now board. Identity rotation on burn belongs to
+§8 and is not wired yet.
 
 ### 7.4 Leases
 
-`claimNext` (`server/engine.go:1248-1256`) picks the first frontier entry with a free host lease.
-Insert between `Frontier` and `ClaimIntent` so a denied intent is never marked `running`
-(`db/exploration.go:1188-1233`); resolve host keys from the intent's `asset_ids` via
-`AssetStore.GetByIDs` (`db/assets.go:1372`). Leases are DB rows with a TTL so a crash cannot lock a
-host; reaping on boot runs beside `ResetRunningIntents` (`server/server.go:304`). Back off instead of
-spinning 800 ms when every frontier row is lease-denied (`server/engine.go:967`).
+`claimNext` (`server/engine.go`) skips a frontier intent whose hosts are saturated, acquiring the
+lease **before** `ClaimIntent` so a denied intent is never marked `running`. Hosts come from the
+intent's `asset_ids`; an intent with no resolvable host is claimed without a lease and a pentest task
+(concurrency 0) takes none. Concurrency is `tasks.stealth->>'host_concurrency'`, default 1, clamped
+1..8; slot keys are `host#N`. Leases live in `task_host_leases` with a 2 minute TTL, refreshed every
+minute by the owning worker, released on settle, and reaped on task start so a crash cannot lock a
+host.
+
+Detached user-message intents (`runDetachedIntent`) bypass the pool deliberately and take no lease.
 
 ## 8. Egress identity
 

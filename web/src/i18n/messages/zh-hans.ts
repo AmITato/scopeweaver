@@ -3452,4 +3452,11 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   engagementDefaultsTitle: "项目默认值",
   engagementDefaultsDesc: "新任务启动时使用的模式。<b>渗透测试</b>保持当前的覆盖优先行为；<b>行动</b>按被监视的目标建模，应用隐蔽限速预算和残留物跟踪。",
   defaultMode: "默认模式",
+  egressTitle: "出站限速预算",
+  egressDesc: "由<b>本地代理</b>强制执行的<b>按主机请求速率限制</b>，作用于<b>所有任务</b>并平滑到目标的连接，避免扫描触发按 IP 的限流。<b>0 表示关闭。</b>突发值是持续速率生效前允许通过的短时请求数。",
+  egressRpsLabel: "每秒请求数",
+  egressBurstLabel: "突发",
+  egressOff: "已关闭：没有按主机限速，任务会以最高速度访问目标。",
+  egressSaved: "出站限速预算已保存",
+  egressInvalid: "请输入 0 或更大的每秒请求数，以及不小于 1 的整数突发值。",
 };

@@ -4,7 +4,7 @@ import { translate as swt } from "@/i18n/runtime";
 import { useI18n } from "@/i18n";
 import * as React from "react";
 
-import { CpuIcon, FlaskConicalIcon, HardDriveIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon, ZapIcon } from "lucide-react";
+import { CpuIcon, FlaskConicalIcon, GaugeIcon, HardDriveIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon, ZapIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,10 @@ export default function SystemSettingsPage() {
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   const [maxConcurrent, setMaxConcurrent] = React.useState("0");
   const [savingMaxConcurrent, setSavingMaxConcurrent] = React.useState(false);
+  // Per-host egress budget enforced by the local proxy for all tasks; 0 requests/second means off.
+  const [egressRps, setEgressRps] = React.useState("0");
+  const [egressBurst, setEgressBurst] = React.useState("5");
+  const [savingEgress, setSavingEgress] = React.useState(false);
   // Engagement default profile for new tasks; pentest is the unchanged default.
   const [defaultMode, setDefaultMode] = React.useState<TaskMode>("pentest");
   // Opt-in local-only LLM network policy; off by default so cloud providers keep working.
@@ -72,6 +76,8 @@ export default function SystemSettingsPage() {
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setMaxConcurrent(String(s.llm_max_concurrent ?? 0));
+    setEgressRps(String(s.egress_rps ?? 0));
+    setEgressBurst(String(s.egress_burst ?? 5));
     setDefaultMode(s.default_task_mode === "op" ? "op" : "pentest");
     setLocalOnly(!!s.local_llm_only);
     setLocalCidrs((s.local_llm_allowed_cidrs ?? []).join("\n"));
@@ -116,6 +122,37 @@ export default function SystemSettingsPage() {
       })
       .catch((e) => toast.error(swt("interface.m1450") + (e as Error).message))
       .finally(() => setSavingMaxConcurrent(false));
+  };
+
+  // Save both egress fields together; normalize the form optimistically and revert on failure.
+  const saveEgress = () => {
+    const rps = Number(egressRps);
+    const burst = Number(egressBurst);
+    if (egressRps.trim() === "" || !Number.isFinite(rps) || rps < 0) {
+      toast.error(swt("settings.egressInvalid"));
+      return;
+    }
+    if (egressBurst.trim() === "" || !Number.isInteger(burst) || burst < 1) {
+      toast.error(swt("settings.egressInvalid"));
+      return;
+    }
+    const prevRps = egressRps;
+    const prevBurst = egressBurst;
+    setEgressRps(String(rps)); // optimistic
+    setEgressBurst(String(burst));
+    setSavingEgress(true);
+    api
+      .setSettings({ egress_rps: rps, egress_burst: burst })
+      .then((s) => {
+        apply(s);
+        toast.success(swt("settings.egressSaved"));
+      })
+      .catch((e) => {
+        setEgressRps(prevRps); // revert on failure
+        setEgressBurst(prevBurst);
+        toast.error(swt("interface.m1450") + (e as Error).message);
+      })
+      .finally(() => setSavingEgress(false));
   };
 
   const saveLocalPolicy = (patch: Pick<Settings, "local_llm_only" | "local_llm_allowed_cidrs">, success: string) => {
@@ -315,6 +352,8 @@ export default function SystemSettingsPage() {
 
   // brave-free selected but no key stored and none being entered → tool stays off.
   const braveNeedsKey = webSearch && backend === "brave-free" && !braveKeySet;
+  // Zero requests per second means the limiter is off; show that hint next to the inputs.
+  const egressDisabled = egressRps.trim() !== "" && Number(egressRps) === 0;
 
   return (
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
@@ -715,6 +754,55 @@ export default function SystemSettingsPage() {
               <Button onClick={saveMaxConcurrent} disabled={!loaded || savingMaxConcurrent}>
                 {swt("interface.m0273")}</Button>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <GaugeIcon className="size-4" />
+              {swt("settings.egressTitle")}</CardTitle>
+            <CardDescription>
+              {rich("settings.egressDesc", {}, { b: (text) => <b>{text}</b>, code: (text) => <code>{text}</code> })}</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="egress-rps" className="text-sm font-normal text-muted-foreground">
+                  {swt("settings.egressRpsLabel")}</Label>
+                <Input
+                  id="egress-rps"
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  inputMode="decimal"
+                  className="w-32 font-mono text-sm"
+                  placeholder="0"
+                  value={egressRps}
+                  disabled={!loaded || savingEgress}
+                  onChange={(e) => setEgressRps(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="egress-burst" className="text-sm font-normal text-muted-foreground">
+                  {swt("settings.egressBurstLabel")}</Label>
+                <Input
+                  id="egress-burst"
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  className="w-32 font-mono text-sm"
+                  placeholder="5"
+                  value={egressBurst}
+                  disabled={!loaded || savingEgress}
+                  onChange={(e) => setEgressBurst(e.target.value)}
+                />
+              </div>
+              <Button onClick={saveEgress} disabled={!loaded || savingEgress}>
+                {swt("interface.m0273")}</Button>
+            </div>
+            {egressDisabled && <p className="text-muted-foreground text-xs">{swt("settings.egressOff")}</p>}
           </CardContent>
         </Card>
 

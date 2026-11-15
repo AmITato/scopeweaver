@@ -3446,6 +3446,7 @@ func (s *Server) settingsPayload() map[string]any {
 	if concLimit == 0 {
 		concLimit = defaultConcurrencyLimit // Return a reasonable default to the UI even when disabled.
 	}
+	egressRPS, egressBurst := s.m.EgressBudget()
 	return map[string]any{
 		"language":                 string(locale.ServerDefault()),
 		"traffic_capture":          s.m.TrafficEnabled(),
@@ -3457,6 +3458,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"tavily_key_set":           strings.TrimSpace(tavilyKey) != "",
 		"web_search_proxy":         proxy,                       // Independent HTTP/HTTPS/SOCKS5 egress proxy; empty means direct.
 		"global_proxy":             s.m.GlobalProxy(),           // Global HTTP/HTTPS/SOCKS5 egress proxy for all target traffic; empty means direct.
+		"egress_rps":               egressRPS,                   // Per-host requests/second enforced by the MITM proxy; 0 = no budget.
+		"egress_burst":             egressBurst,                 // Token-bucket burst per host, default 5.
 		"python_interpreter":       strings.TrimSpace(pyStored), // User/automatically configured value; empty uses runtime detection.
 		"workers":                  s.m.Workers(),               // Concurrent worker agents, default 3; applies to subsequently started tasks.
 		"task_concurrency_enabled": concOn,                      // Task concurrency-limit switch, disabled by default.
@@ -3534,10 +3537,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		WebSearchBackend *string `json:"web_search_backend"`
 		BraveKey         *string `json:"brave_search_api_key"`
 		TavilyKey        *string `json:"tavily_search_api_key"`
-		WebSearchProxy   *string `json:"web_search_proxy"`   // Independent HTTP/HTTPS/SOCKS5 proxy; null preserves it and empty clears it.
-		GlobalProxy      *string `json:"global_proxy"`       // Global HTTP/HTTPS/SOCKS5 proxy; null preserves it and empty selects direct connections.
-		PythonInterp     *string `json:"python_interpreter"` // Python interpreter path for custom script tools.
-		Workers          *int    `json:"workers"`            // Positive concurrent-worker count; applies to subsequently started tasks.
+		WebSearchProxy   *string `json:"web_search_proxy"` // Independent HTTP/HTTPS/SOCKS5 proxy; null preserves it and empty clears it.
+		GlobalProxy      *string `json:"global_proxy"`     // Global HTTP/HTTPS/SOCKS5 proxy; null preserves it and empty selects direct connections.
+		// Per-host egress budget enforced inside the MITM proxy. EgressRPS 0 disables
+		// it; omitted fields preserve the stored pair, so a burst-only edit is safe.
+		EgressRPS    *float64 `json:"egress_rps"`
+		EgressBurst  *int     `json:"egress_burst"`
+		PythonInterp *string  `json:"python_interpreter"` // Python interpreter path for custom script tools.
+		Workers      *int     `json:"workers"`            // Positive concurrent-worker count; applies to subsequently started tasks.
 		// Task concurrency caps running tasks. Disabled means unlimited; enabled queues overflow and admits it when slots open.
 		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
@@ -3724,6 +3731,22 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true // capture-off egress is baked into agents at build time → rebuild
+	}
+	if req.EgressRPS != nil || req.EgressBurst != nil {
+		// Partial PUT preserves the omitted half, like the concurrency pair: changing
+		// the burst must not silently reset the rate (and disable the budget).
+		rps, burst := s.m.EgressBudget()
+		if req.EgressRPS != nil {
+			rps = *req.EgressRPS
+		}
+		if req.EgressBurst != nil {
+			burst = *req.EgressBurst
+		}
+		if err := s.m.SetEgressBudget(rps, burst); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		changed = true // proxy + CA presence is baked into agents at build time → rebuild
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.

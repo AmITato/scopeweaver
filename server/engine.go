@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -758,6 +759,12 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	}
 	defer e.decInflight(t.ID)
 	ctx = locale.WithLang(ctx, taskLanguage(e.m.pg, t.ID))
+	// Drop leases left behind by a crash or restart before workers start.
+	if taskNum, err := strconv.ParseInt(t.ID, 10, 64); err == nil {
+		if n, err := e.m.pg.ReapHostLeases(taskNum); err == nil && n > 0 {
+			log.Printf(locale.Text(locale.FromContext(ctx), "[leases] task %s expired %d stale host lease(s)"), t.ID, n)
+		}
+	}
 	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.closing || e.IsDeleting(t.ID) {
@@ -982,11 +989,16 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 // runIntent. Returns false when nothing was claimable. The pool worker loop is its
 // only caller.
 func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
-	intent := e.claimNext(t, name)
-	if intent == nil {
+	intent, leases, ok := e.claimNext(t, name)
+	if !ok {
 		return false
 	}
 	log.Printf(locale.Text(locale.FromContext(ctx), "[worker %s] task %s claimed intent #%d"), name, t.ID, intent.ID)
+	stopRenew := e.renewHostLeases(t, leases, name)
+	defer func() {
+		stopRenew()
+		e.releaseHostLeases(t, leases, name)
+	}()
 	return e.runIntent(ctx, t, name, worker, intent, "", "")
 }
 
@@ -1281,12 +1293,153 @@ func (e *Engine) residueBlocks(t *Task) bool {
 	return true
 }
 
-func (e *Engine) claimNext(t *Task, name string) *db.Node {
+// claimNext takes the first frontier intent whose hosts are not already at their
+// per-host limit. The lease is acquired BEFORE the intent is marked running, so a
+// denied intent stays open for a free worker. Intent hosts come from its anchored
+// assets; an intent with no resolvable host is claimed without a lease.
+func (e *Engine) claimNext(t *Task, name string) (*db.Node, []string, bool) {
 	fr, _ := t.Store.Frontier(20)
 	for _, in := range fr {
+		leases, ok := e.claimHostLeases(t, in, name)
+		if !ok {
+			continue
+		}
 		if ok, _ := t.Store.ClaimIntent(in.ID, name); ok {
-			return in
+			return in, leases, true
+		}
+		e.releaseHostLeases(t, leases, name)
+	}
+	return nil, nil, false
+}
+
+// claimHostLeases reserves every host an intent touches. Unlimited tasks
+// (pentest) take no leases. Hosts are tried on each of their concurrency slots;
+// if any host is saturated the intent is skipped for this worker.
+func (e *Engine) claimHostLeases(t *Task, in *db.Node, owner string) ([]string, bool) {
+	if e.m.pg == nil {
+		return nil, true
+	}
+	taskNum, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		return nil, true
+	}
+	limit := e.m.pg.TaskHostConcurrency(taskNum)
+	if limit <= 0 {
+		return nil, true
+	}
+	hosts := intentHosts(e.m.assets, in)
+	if len(hosts) == 0 {
+		return nil, true
+	}
+	var leases []string
+	for _, host := range hosts {
+		key, ok := e.takeHostSlot(taskNum, host, owner, limit)
+		if !ok {
+			e.releaseHostLeases(t, leases, owner)
+			return nil, false
+		}
+		leases = append(leases, key)
+	}
+	return leases, true
+}
+
+// takeHostSlot tries host#1..host#limit and returns the first free key.
+func (e *Engine) takeHostSlot(taskID int64, host, owner string, limit int) (string, bool) {
+	for slot := 1; slot <= limit; slot++ {
+		key := host
+		if limit > 1 {
+			key = fmt.Sprintf("%s#%d", host, slot)
+		}
+		ok, err := e.m.pg.TryLeaseHost(taskID, key, owner, db.DefaultHostLeaseTTL)
+		if err == nil && ok {
+			return key, true
 		}
 	}
-	return nil
+	return "", false
+}
+
+func (e *Engine) releaseHostLeases(t *Task, leases []string, owner string) {
+	if len(leases) == 0 || e.m.pg == nil {
+		return
+	}
+	taskID, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		return
+	}
+	for _, key := range leases {
+		_ = e.m.pg.ReleaseHost(taskID, key, owner)
+	}
+}
+
+// renewHostLeases refreshes held leases every minute so a long run keeps them.
+func (e *Engine) renewHostLeases(t *Task, leases []string, owner string) func() {
+	if len(leases) == 0 || e.m.pg == nil {
+		return func() {}
+	}
+	taskID, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				for _, key := range leases {
+					_, _ = e.m.pg.TryLeaseHost(taskID, key, owner, db.DefaultHostLeaseTTL)
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
+}
+
+// intentHosts resolves an intent's anchored assets to host keys, deduplicated.
+func intentHosts(as *db.AssetStore, in *db.Node) []string {
+	ids := intentAssetIDs(in)
+	if len(ids) == 0 || as == nil {
+		return nil
+	}
+	assets, err := as.GetByIDs(ids)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var hosts []string
+	for _, a := range assets {
+		if a == nil {
+			continue
+		}
+		host := a.Domain
+		if host == "" {
+			host = a.IP
+		}
+		if host == "" {
+			host = a.RootDomain
+		}
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
+// intentAssetIDs reads the planner's asset_ids array off the intent payload.
+func intentAssetIDs(in *db.Node) []int64 {
+	if in == nil || len(in.Payload) == 0 {
+		return nil
+	}
+	var payload struct {
+		AssetIDs []int64 `json:"asset_ids"`
+	}
+	if err := json.Unmarshal(in.Payload, &payload); err != nil {
+		return nil
+	}
+	return payload.AssetIDs
 }

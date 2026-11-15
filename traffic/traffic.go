@@ -171,6 +171,13 @@ type Traffic struct {
 	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
 	// so no host escapes it. Hot-swappable at runtime via SetUpstreamProxy.
 	upstream atomic.Pointer[url.URL]
+	// captureOn gates record(): with it off the proxy still forwards and still
+	// applies the egress budget, it just writes nothing. Atomic because
+	// Response calls it on every exchange.
+	captureOn atomic.Bool
+	// budget applies the per-host egress budget, if one is set. Independent of
+	// capture: throttling an op engagement must work without recording.
+	budget budget
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -229,6 +236,9 @@ func Open(dir, addr string) (*Traffic, error) {
 	})
 	p.AddAddon(&sink{t: t})
 	t.proxy = p
+	// Recording is on by default: Open is the recorder, and only a caller that
+	// wants budget-only egress (the manager, from settings) turns it off.
+	t.captureOn.Store(true)
 	return t, nil
 }
 
@@ -356,6 +366,14 @@ func (t *Traffic) CACertPath() string {
 	return filepath.Join(t.dir, "_ca", "mitmproxy-ca-cert.pem")
 }
 
+// SetCapture turns exchange recording on or off. Off means the proxy forwards and
+// throttles but writes nothing — so a budget-only engagement leaves no traffic
+// tree behind. The switch is atomic and takes effect on the next response.
+func (t *Traffic) SetCapture(on bool) { t.captureOn.Store(on) }
+
+// CaptureOn reports whether exchanges are being recorded.
+func (t *Traffic) CaptureOn() bool { return t.captureOn.Load() }
+
 // Start runs the proxy (blocking); run in a goroutine.
 func (t *Traffic) Start() error { return t.proxy.Start() }
 
@@ -384,7 +402,8 @@ func (t *Traffic) stopping() bool {
 }
 func (t *Traffic) DB() *sql.DB { return t.db }
 
-// sink is the go-mitmproxy addon that records completed exchanges.
+// sink is the go-mitmproxy addon: it applies the per-host egress budget on the way
+// in and records the completed exchange on the way out (when capture is on).
 type sink struct {
 	mproxy.BaseAddon
 	t *Traffic
@@ -394,7 +413,23 @@ func (s *sink) Response(f *mproxy.Flow) {
 	if f.Request == nil || f.Response == nil {
 		return
 	}
+	// Budget accounting runs even without capture: the 429/403 signals are the
+	// whole point of throttling, and they must still be seen.
+	if f.Request.URL != nil {
+		s.t.budget.observe(f.Request.URL.Hostname(), f.Response.StatusCode, s.t.budget.clock())
+	}
 	s.t.record(f)
+}
+
+// Request is the throttle point: the full request has been read and nothing has
+// been forwarded yet, so waiting here delays the target by exactly one token.
+// Hosts tunneled transparently (MITM failed) are blind to addons and so are not
+// throttled; they are also not recorded, which is the same fail-open trade.
+func (s *sink) Request(f *mproxy.Flow) {
+	if f == nil || f.Request == nil || f.Request.URL == nil || !s.t.budget.on.Load() {
+		return
+	}
+	s.t.take(f.Request.URL.Hostname())
 }
 
 // RequestError fires when a request through an established MITM tunnel fails. If
@@ -435,6 +470,11 @@ func proxyCausedErr(err error) bool {
 // full-text index. Nothing is written to a per-request directory — only bodies
 // above maxInlineBody spill to the content-addressed blob store.
 func (t *Traffic) record(f *mproxy.Flow) {
+	// Capture off: the proxy is only carrying the egress budget. Nothing is
+	// written, so seq (the id's counter) is simply not advanced either.
+	if !t.captureOn.Load() {
+		return
+	}
 	// The write lock covers blob + index writes, so DeleteHost (and its blob GC)
 	// can run under the same lock without racing a concurrent record.
 	t.wmu.Lock()

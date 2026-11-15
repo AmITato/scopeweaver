@@ -2247,8 +2247,10 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/traffic/exchange") return D.trafficDetail;
   if (path === "/settings" && m === "GET") return { ...D.settings, default_task_mode: D.settings.default_task_mode ?? "pentest" };
   if (path === "/settings" && m === "PUT") {
-    // Demo settings are otherwise read-only; keep the engagement default toggle sticky.
+    // Demo settings are otherwise read-only; keep the engagement default toggle and egress budget sticky.
     if (b.default_task_mode === "op" || b.default_task_mode === "pentest") D.settings.default_task_mode = b.default_task_mode;
+    if (typeof b.egress_rps === "number") D.settings.egress_rps = b.egress_rps;
+    if (typeof b.egress_burst === "number") D.settings.egress_burst = b.egress_burst;
     return { ...D.settings, ...b };
   }
   if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };

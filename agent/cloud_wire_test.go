@@ -228,7 +228,7 @@ func TestCloudWorkerToolPrefixAndClaudeTemplate(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := t.TempDir()
-			system, boundary := deferredSystem(workerSystem("", "", root, root, locale.En), DeferredInfo{})
+			system, boundary := deferredSystem(workerSystem("", "", false, root, root, locale.En), DeferredInfo{})
 			calls := 0
 			probe := actool.Build(actool.Spec{Name: "probe", Description: "Read a controlled fixture.", Schema: map[string]any{"type": "object", "properties": map[string]any{}}, Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
 				calls++

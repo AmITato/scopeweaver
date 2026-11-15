@@ -135,6 +135,7 @@ import type {
   TaskArchive,
   TaskArchiveState,
   TaskCategory,
+  TaskMode,
   TaskStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -943,6 +944,7 @@ export default function TasksPage() {
                     />
                     <TableHead>{swt("interface.m0868")}</TableHead>
                     <TableHead>{swt("interface.m0605")}</TableHead>
+                    <TableHead>{swt("interface.m2889")}</TableHead>
                     <TableHead>{swt("interface.m0523")}</TableHead>
                     <SortableTaskHead
                       field="status"
@@ -1156,6 +1158,21 @@ function ConcurrencySettingsDialog() {
   );
 }
 
+// TaskModeBadge is a compact engagement-profile label: outline for the unchanged
+// pentest default and filled for op so stealth runs stand out in the table.
+function TaskModeBadge({ mode }: { mode?: TaskMode }) {
+  const { t: swt } = useI18n();
+  const op = mode === "op";
+  return (
+    <Badge
+      variant={op ? "default" : "outline"}
+      className="h-4 px-1.5 font-semibold text-[10px] uppercase tracking-wide"
+    >
+      {op ? swt("interface.m2891") : swt("interface.m2890")}
+    </Badge>
+  );
+}
+
 // TaskRow is memoized so per-second runtime ticks and
 // the POLL_MS list refresh only re-render the rows whose data actually moved — a table page
 // is 20 rows × (StatusBadge + Link + a Radix AlertDialog tree), far too heavy to rebuild
@@ -1211,6 +1228,14 @@ const TaskRow = React.memo(function TaskRow({
         >
           {task.description}
         </Link>
+      </TableCell>
+      <TableCell className="max-w-40 align-top">
+        <TaskModeBadge mode={task.mode} />
+        {task.cover_story && (
+          <p className="text-muted-foreground mt-1 truncate text-xs" title={task.cover_story}>
+            {task.cover_story}
+          </p>
+        )}
       </TableCell>
       <TableCell className="text-muted-foreground max-w-40 truncate" title={task.goal}>
         {task.goal}
@@ -3140,6 +3165,9 @@ function CreateTaskSheet({
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // Planner heartbeat in minutes; default/minimum 10, matching the backend.
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // Seed intent lets Workers start before initial planning; off by default for standard plan-then-execute flow.
   const [coverageEnabled, setCoverageEnabled] = React.useState(true); // Coverage defaults on. Off disables calculation/display, scope accumulation, and scope tools; company links remain.
+  const [defaultMode, setDefaultMode] = React.useState<TaskMode>("pentest"); // Engagement default from settings; pentest unless configured otherwise.
+  const [mode, setMode] = React.useState<TaskMode>("pentest"); // pentest is the unchanged default; op adds stealth budgeting and residue tracking.
+  const [coverStory, setCoverStory] = React.useState(""); // One line describing what the intrusion looks like from inside; required for op.
   const [interceptRules, setInterceptRules] = React.useState<AssetInterceptRuleInput[]>([]); // Task-specific asset interception rules, never written to the global table.
   // Before task creation, stage uploads in drafts/<draftId>/uploads/ and append returned absolute paths to description.
   const [uploading, setUploading] = React.useState(false);
@@ -3158,6 +3186,15 @@ function CreateTaskSheet({
       .companies()
       .then(setCompanies)
       .catch(() => setCompanies([]));
+    // Seed the mode selector from the engagement default, falling back to pentest.
+    api
+      .settings()
+      .then((s) => {
+        const next: TaskMode = s.default_task_mode === "op" ? "op" : "pentest";
+        setDefaultMode(next);
+        setMode(next);
+      })
+      .catch(() => undefined);
   }, []);
 
   // pickFiles uploads the chosen files into this draft's staging dir and appends their
@@ -3191,6 +3228,10 @@ function CreateTaskSheet({
       toast.error(swt("interface.m1025", { p0: MAX_SOURCE_TASKS }));
       return;
     }
+    if (mode === "op" && !coverStory.trim()) {
+      toast.error(swt("interface.m2896"));
+      return;
+    }
     setCreating(true);
     try {
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
@@ -3207,6 +3248,8 @@ function CreateTaskSheet({
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
         coverageEnabled,
+        mode,
+        coverStory: coverStory.trim(),
         interceptRules: interceptRules
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
@@ -3224,6 +3267,8 @@ function CreateTaskSheet({
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
       setCoverageEnabled(true);
+      setMode(defaultMode);
+      setCoverStory("");
       setInterceptRules([]);
       setUploadCount(0);
       draftIdRef.current = "";
@@ -3383,6 +3428,31 @@ function CreateTaskSheet({
                 {swt("interface.m1046")}<span className="text-muted-foreground ml-auto text-xs font-normal">{swt("interface.m1047")}</span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
+                <Field>
+                  <FieldLabel htmlFor="task-mode">{swt("interface.m2889")}</FieldLabel>
+                  <Select value={mode} onValueChange={(v) => setMode(v as TaskMode)}>
+                    <SelectTrigger id="task-mode" className="w-48">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pentest">{swt("interface.m2890")}</SelectItem>
+                      <SelectItem value="op">{swt("interface.m2891")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>{swt("interface.m2894")}</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="cover-story">{swt("interface.m2892")}</FieldLabel>
+                  <Textarea
+                    id="cover-story"
+                    className="min-h-20"
+                    maxLength={240}
+                    placeholder={swt("interface.m2893")}
+                    value={coverStory}
+                    onChange={(e) => setCoverStory(e.target.value)}
+                  />
+                  {mode === "op" && <FieldDescription>{swt("interface.m2895")}</FieldDescription>}
+                </Field>
                 <div className="grid gap-2">
                   <Label htmlFor="timeout-min">{swt("interface.m1048")}</Label>
                   <Input

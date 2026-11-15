@@ -16,7 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { Settings } from "@/lib/types";
+import type { Settings, TaskMode } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -46,6 +46,8 @@ export default function SystemSettingsPage() {
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   const [maxConcurrent, setMaxConcurrent] = React.useState("0");
   const [savingMaxConcurrent, setSavingMaxConcurrent] = React.useState(false);
+  // Engagement default profile for new tasks; pentest is the unchanged default.
+  const [defaultMode, setDefaultMode] = React.useState<TaskMode>("pentest");
   // Opt-in local-only LLM network policy; off by default so cloud providers keep working.
   const [localOnly, setLocalOnly] = React.useState(false);
   const [localCidrs, setLocalCidrs] = React.useState("");
@@ -70,6 +72,7 @@ export default function SystemSettingsPage() {
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setMaxConcurrent(String(s.llm_max_concurrent ?? 0));
+    setDefaultMode(s.default_task_mode === "op" ? "op" : "pentest");
     setLocalOnly(!!s.local_llm_only);
     setLocalCidrs((s.local_llm_allowed_cidrs ?? []).join("\n"));
     setInjectPlanner(s.constraints_inject_planner !== false);
@@ -163,6 +166,17 @@ export default function SystemSettingsPage() {
       .then(apply)
       .catch(() => setTrafficCapture(!v)) // revert on failure
       .finally(() => setSaving(false));
+  };
+
+  // Toggle the engagement default between pentest and op; optimistic with revert.
+  const toggleDefaultMode = (v: boolean) => {
+    const next: TaskMode = v ? "op" : "pentest";
+    const prev = defaultMode;
+    setDefaultMode(next);
+    api
+      .setSettings({ default_task_mode: next })
+      .then(apply)
+      .catch(() => setDefaultMode(prev));
   };
 
   const toggleInjectPlanner = (v: boolean) => {
@@ -331,6 +345,27 @@ export default function SystemSettingsPage() {
               checked={trafficCapture}
               disabled={!loaded || saving}
               onCheckedChange={toggleTraffic}
+            />
+          </CardContent>
+        </Card>
+
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <FlaskConicalIcon className="size-4" />
+              {swt("settings.engagementDefaultsTitle")}</CardTitle>
+            <CardDescription>
+              {rich("settings.engagementDefaultsDesc", {}, { b: (text) => <b>{text}</b> })}</CardDescription>
+          </CardHeader>
+          <CardContent className="flex items-center justify-between gap-4">
+            <Label htmlFor="default-mode" className="text-sm font-normal text-muted-foreground">
+              {swt("settings.defaultMode")}{" "}{defaultMode === "op" ? swt("interface.m2891") : swt("interface.m2890")}
+            </Label>
+            <Switch
+              id="default-mode"
+              checked={defaultMode === "op"}
+              disabled={!loaded}
+              onCheckedChange={toggleDefaultMode}
             />
           </CardContent>
         </Card>

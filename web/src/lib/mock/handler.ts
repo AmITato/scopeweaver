@@ -1000,6 +1000,11 @@ function parseBody(body?: BodyInit | null): Record<string, unknown> {
   }
 }
 
+// recordOrEmpty returns a JSON object body field, defaulting to an empty object.
+function recordOrEmpty(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
 export async function mockHandle<T>(method: string, rawPath: string, body?: BodyInit | null): Promise<T> {
   advanceMockRetests();
   await delay();
@@ -1206,6 +1211,10 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       llm_failover_state: profileIDs.length ? "ready" : "default",
       source_task_ids: sourceTaskIDs,
       company_ids: companyIDs,
+      mode: b.mode === "op" ? "op" : "pentest",
+      cover_story: typeof b.cover_story === "string" ? b.cover_story.trim() : "",
+      house_style: recordOrEmpty(b.house_style),
+      stealth: recordOrEmpty(b.stealth),
     };
     const numericTaskID = nextMockTaskAssetID++;
     mockTaskAssetIDs.set(id, numericTaskID);
@@ -1364,6 +1373,15 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       task.pinned_at = b.pinned ? (task.pinned_at ?? new Date().toISOString()) : null;
     }
     sortMockTasks();
+    return cloneDemoFixture(task);
+  }
+  if (seg[0] === "tasks" && seg.length === 3 && seg[2] === "opsec" && m === "PATCH") {
+    const task = mockTasks.find((item) => item.id === seg[1]);
+    if (!task) throw new Error(swt("interface.m2774"));
+    if (b.mode === "op" || b.mode === "pentest") task.mode = b.mode;
+    if (typeof b.cover_story === "string") task.cover_story = b.cover_story.trim();
+    if (b.house_style !== undefined) task.house_style = recordOrEmpty(b.house_style);
+    if (b.stealth !== undefined) task.stealth = recordOrEmpty(b.stealth);
     return cloneDemoFixture(task);
   }
   if (seg[0] === "tasks" && seg.length === 2 && m === "DELETE") {
@@ -2227,8 +2245,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/traffic/hosts") return { hosts: D.trafficHosts };
   if (path === "/traffic") return D.traffic;
   if (path === "/traffic/exchange") return D.trafficDetail;
-  if (path === "/settings" && m === "GET") return D.settings;
-  if (path === "/settings" && m === "PUT") return { ...D.settings, ...b };
+  if (path === "/settings" && m === "GET") return { ...D.settings, default_task_mode: D.settings.default_task_mode ?? "pentest" };
+  if (path === "/settings" && m === "PUT") {
+    // Demo settings are otherwise read-only; keep the engagement default toggle sticky.
+    if (b.default_task_mode === "op" || b.default_task_mode === "pentest") D.settings.default_task_mode = b.default_task_mode;
+    return { ...D.settings, ...b };
+  }
   if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };
   if (path === "/settings/python/detect") return { python_interpreter: "/usr/bin/python3" };
   if (path === "/chat")

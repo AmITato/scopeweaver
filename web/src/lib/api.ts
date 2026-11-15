@@ -94,6 +94,7 @@ import type {
   TaskConstraint,
   TaskGoal,
   TaskLLMResolutions,
+  TaskMode,
   TaskNode,
   TaskScopeRow,
   TaskTemplate,
@@ -249,6 +250,10 @@ export const api = {
     seedFirstIntent?: boolean;
     planHeartbeatSeconds?: number;
     coverageEnabled?: boolean;
+    mode?: TaskMode;
+    coverStory?: string;
+    houseStyle?: Record<string, unknown>;
+    stealth?: Record<string, unknown>;
     interceptRules?: AssetInterceptRuleInput[];
   }) =>
     post<Task>("/tasks", {
@@ -263,10 +268,25 @@ export const api = {
       seed_first_intent: input.seedFirstIntent ?? false,
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 is normalized by the backend to 600 seconds (10 minutes).
       coverage_enabled: input.coverageEnabled ?? true, // Enabled by default; false disables asset coverage.
+      mode: input.mode ?? "pentest", // pentest keeps existing behaviour; op enables stealth.
+      cover_story: input.coverStory?.trim() ?? "",
+      house_style: input.houseStyle ?? {},
+      stealth: input.stealth ?? {},
       intercept_rules: input.interceptRules ?? [], // Task-specific asset interception rules.
     }),
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
   updateTask: (id: string, input: { name?: string; pinned?: boolean }) => patch<Task>(`/tasks/${id}`, input),
+  // Partial opsec patch: omitted fields keep their stored value; stealth/house_style are stored as-is.
+  updateTaskOpsec: (
+    id: string,
+    input: { mode?: TaskMode; coverStory?: string; houseStyle?: Record<string, unknown>; stealth?: Record<string, unknown> },
+  ) =>
+    patch<Task>(`/tasks/${id}/opsec`, {
+      mode: input.mode,
+      cover_story: input.coverStory?.trim(),
+      house_style: input.houseStyle,
+      stealth: input.stealth,
+    }),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),

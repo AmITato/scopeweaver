@@ -3270,7 +3270,15 @@ const interfaceMessages: Record<keyof typeof interfaceSource, string> = {
   m2885: "此域名及其所有子域名",
   m2886: "會把該意圖置為「已刪除」並記錄刪除原因，意圖節點、執行記錄、 已登記的事實和漏洞",
   m2887: "。規劃者會收到「該意圖由使用者刪除 + 原因」並據此重新規劃。",
-  m2888: "保留資料，可追溯"
+  m2888: "保留資料，可追溯",
+  m2889: "模式",
+  m2890: "滲透測試",
+  m2891: "行動",
+  m2892: "掩護故事",
+  m2893: "負責 QuickBooks 權杖整合的外包人員",
+  m2894: "滲透測試維持目前的覆蓋優先流程。行動模式將目標視為有藍隊監視的實戰演練。",
+  m2895: "行動模式下會套用隱蔽限速預算與殘留物追蹤。",
+  m2896: "行動模式需要有掩護故事。"
 };
 
 export { interfaceMessages as interface };
@@ -3441,4 +3449,7 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   updateLocalOnly:
     "已開啟僅本地 LLM 網路，因此無法檢查或下載更新。這是有意為之，並非連線問題。目前版本和復原仍然可用；如需檢查更新，請關閉僅本地模式。",
   judgeLoadFailed: "無法載入已儲存的核准設定，為避免用預設值覆蓋，已停用儲存。",
+  engagementDefaultsTitle: "專案預設值",
+  engagementDefaultsDesc: "新任務啟動時使用的模式。<b>滲透測試</b>維持目前的覆蓋優先行為；<b>行動</b>以被監視的目標建模，套用隱蔽限速預算與殘留物追蹤。",
+  defaultMode: "預設模式",
 };

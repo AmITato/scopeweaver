@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -39,7 +40,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
-import type { LLMProfile, Task } from "@/lib/types";
+import type { LLMProfile, Task, TaskMode } from "@/lib/types";
 
 import { AssetsTab } from "./_tabs/assets-tab";
 import { BroadcastTab } from "./_tabs/broadcast-tab";
@@ -70,6 +71,18 @@ function taskProfileIDs(task: Task): string[] {
     return task.llm_profile_ids.map(String);
   }
   return task.llm_profile_id ? [String(task.llm_profile_id)] : [];
+}
+
+// TaskModeBadge marks the engagement profile in the header: outline for the unchanged
+// pentest default, filled for op so a stealth run is visible at a glance.
+function TaskModeBadge({ mode }: { mode?: TaskMode }) {
+  const { t: swt } = useI18n();
+  const op = mode === "op";
+  return (
+    <Badge variant={op ? "default" : "outline"} className="h-5 px-2 font-semibold text-[10px] uppercase tracking-wide">
+      {op ? swt("interface.m2891") : swt("interface.m2890")}
+    </Badge>
+  );
 }
 
 function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: LLMProfile[]; onUpdated: () => void }) {
@@ -371,6 +384,7 @@ function TaskDetailInner() {
             {task.id}
           </code>
           <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
+          <TaskModeBadge mode={task.mode} />
           <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
           <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
           {canArchive ? (
@@ -402,6 +416,12 @@ function TaskDetailInner() {
           </Button>
         </div>
         <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
+        {task.cover_story && (
+          <p className="truncate text-xs text-muted-foreground" title={task.cover_story}>
+            <span className="font-medium">{swt("interface.m2892")}: </span>
+            {task.cover_story}
+          </p>
+        )}
         {/* Tabs */}
         <div className="no-scrollbar min-w-0 overflow-x-auto">
           <TabsList variant="default" className="min-w-max">

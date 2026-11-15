@@ -60,6 +60,10 @@ type Task struct {
 	TimeoutSeconds       int                    `json:"timeout_seconds"`
 	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // Planner heartbeat interval in seconds.
 	CoverageEnabled      bool                   `json:"coverage_enabled"`       // Asset-coverage flag, fixed at creation and enabled by default.
+	Mode                 string                 `json:"mode"`                   // Engagement profile: pentest (default) or op.
+	CoverStory           string                 `json:"cover_story"`            // One line describing what the intrusion looks like from inside.
+	HouseStyle           json.RawMessage        `json:"house_style"`            // Captured target naming grammar (JSON object).
+	Stealth              json.RawMessage        `json:"stealth"`                // Per-host noise budget/backoff state (JSON object).
 	FirstRunAt           int64                  `json:"first_run_at,omitempty"`
 	DeadlineAt           int64                  `json:"deadline_at,omitempty"`
 	Store                *pgdb.ExplorationStore `json:"-"`
@@ -94,6 +98,10 @@ type taskLifecycleState struct {
 	CompanyIDs    []int64
 	CategoryID    *int64
 	CategoryName  string
+	Mode          string
+	CoverStory    string
+	HouseStyle    json.RawMessage
+	Stealth       json.RawMessage
 }
 
 func (t *Task) lifecycleSnapshot() taskLifecycleState {
@@ -121,6 +129,10 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		CompanyIDs:    append([]int64(nil), t.CompanyIDs...),
 		CategoryID:    cloneInt64Ptr(t.CategoryID),
 		CategoryName:  t.CategoryName,
+		Mode:          t.Mode,
+		CoverStory:    t.CoverStory,
+		HouseStyle:    cloneRawMessage(t.HouseStyle),
+		Stealth:       cloneRawMessage(t.Stealth),
 	}
 }
 
@@ -145,6 +157,10 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CompanyIDs = append(t.CompanyIDs[:0], state.CompanyIDs...)
 	t.CategoryID = cloneInt64Ptr(state.CategoryID)
 	t.CategoryName = state.CategoryName
+	t.Mode = state.Mode
+	t.CoverStory = state.CoverStory
+	t.HouseStyle = cloneRawMessage(state.HouseStyle)
+	t.Stealth = cloneRawMessage(state.Stealth)
 	t.lifecycleMu.Unlock()
 }
 
@@ -163,6 +179,13 @@ func cloneInt64Ptr(value *int64) *int64 {
 	}
 	copy := *value
 	return &copy
+}
+
+func cloneRawMessage(value json.RawMessage) json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), value...)
 }
 
 func (t *Task) llmStateSnapshot() taskLLMState {
@@ -900,7 +923,9 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
 		CoverageEnabled: pt.CoverageEnabled,
-		FirstRunAt:      unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
+		Mode:            pt.Mode, CoverStory: pt.CoverStory,
+		HouseStyle: cloneRawMessage(pt.HouseStyle), Stealth: cloneRawMessage(pt.Stealth),
+		FirstRunAt: unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		Store: store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
 	}
 }
@@ -927,6 +952,35 @@ func (m *Manager) UpdateTaskMetadata(taskID string, patch pgdb.TaskPatch) (*Task
 	task.updateLifecycle(func(state *taskLifecycleState) {
 		state.Name = updated.Name
 		state.PinnedAt = unixOrZero(updated.PinnedAt)
+	})
+	return task, nil
+}
+
+// UpdateTaskOpsec changes the engagement profile/stealth context of a live task
+// without interrupting any planner, main-agent, or worker call. taskStateMu keeps
+// it ordered with the other task-state writers.
+func (m *Manager) UpdateTaskOpsec(taskID string, patch pgdb.TaskPatch) (*Task, error) {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil || id <= 0 {
+		return nil, nil
+	}
+	updated, err := m.pg.UpdateTask(id, patch)
+	if err != nil || updated == nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	task := m.tasks[taskID]
+	m.mu.RUnlock()
+	if task == nil {
+		return nil, nil
+	}
+	task.updateLifecycle(func(state *taskLifecycleState) {
+		state.Mode = updated.Mode
+		state.CoverStory = updated.CoverStory
+		state.HouseStyle = cloneRawMessage(updated.HouseStyle)
+		state.Stealth = cloneRawMessage(updated.Stealth)
 	})
 	return task, nil
 }

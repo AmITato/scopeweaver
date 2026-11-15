@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/chatstate"
@@ -740,6 +741,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/task-templates/{id}", s.pgDeleteTaskTemplate)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
+	mux.HandleFunc("PATCH /api/tasks/{id}/opsec", s.updateTaskOpsec)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
 	// Task-specific asset interception/allow rules.
 	mux.HandleFunc("GET /api/tasks/{id}/intercept-rules", s.taskInterceptListRules)
@@ -1555,18 +1557,22 @@ func truncateReply(s string) string {
 }
 
 type createTaskReq struct {
-	Name                 string   `json:"name,omitempty"` // Optional task name; omitted/empty means unnamed.
-	CategoryID           *int64   `json:"category_id,omitempty"`
-	Description          string   `json:"description"`
-	Goal                 string   `json:"goal"`
-	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`    // Task LLM profile; omitted/null selects the active profile.
-	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"`   // Ordered task-level profile chain; the first entry is initially active.
-	SourceTaskIDs        []string `json:"source_task_ids,omitempty"`   // Direct, read-only inheritance source tasks only.
-	CompanyIDs           []int64  `json:"company_ids,omitempty"`       // Associate company scope and snapshot current company assets, without copying assets or forcing intents.
-	TimeoutSeconds       int      `json:"timeout_seconds"`             // Task timeout in seconds; zero/omitted means unlimited.
-	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // Planner heartbeat seconds; zero/omitted defaults to 600 (10 minutes), also the enforced minimum.
-	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // Explicit true seeds one intent from description/goals so a worker can start before planning. Omitted/null defaults false; useful for simple CTF tasks needing one work item.
-	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // Asset coverage defaults true. False disables calculation/display/automatic scope accumulation and hides add_task_scope/list_untested_assets; company associations remain available.
+	Name                 string          `json:"name,omitempty"` // Optional task name; omitted/empty means unnamed.
+	CategoryID           *int64          `json:"category_id,omitempty"`
+	Description          string          `json:"description"`
+	Goal                 string          `json:"goal"`
+	LLMProfileID         *int64          `json:"llm_profile_id,omitempty"`    // Task LLM profile; omitted/null selects the active profile.
+	LLMProfileIDs        []int64         `json:"llm_profile_ids,omitempty"`   // Ordered task-level profile chain; the first entry is initially active.
+	SourceTaskIDs        []string        `json:"source_task_ids,omitempty"`   // Direct, read-only inheritance source tasks only.
+	CompanyIDs           []int64         `json:"company_ids,omitempty"`       // Associate company scope and snapshot current company assets, without copying assets or forcing intents.
+	TimeoutSeconds       int             `json:"timeout_seconds"`             // Task timeout in seconds; zero/omitted means unlimited.
+	PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`      // Planner heartbeat seconds; zero/omitted defaults to 600 (10 minutes), also the enforced minimum.
+	SeedFirstIntent      *bool           `json:"seed_first_intent,omitempty"` // Explicit true seeds one intent from description/goals so a worker can start before planning. Omitted/null defaults false; useful for simple CTF tasks needing one work item.
+	CoverageEnabled      *bool           `json:"coverage_enabled,omitempty"`  // Asset coverage defaults true. False disables calculation/display/automatic scope accumulation and hides add_task_scope/list_untested_assets; company associations remain available.
+	Mode                 *string         `json:"mode,omitempty"`              // Engagement profile pentest|op; omitted defaults to pentest and keeps historical behaviour.
+	CoverStory           *string         `json:"cover_story,omitempty"`       // One line describing what the intrusion looks like from inside; trimmed, capped like the name.
+	HouseStyle           json.RawMessage `json:"house_style,omitempty"`       // Captured target naming grammar as a JSON object; omitted defaults to {}.
+	Stealth              json.RawMessage `json:"stealth,omitempty"`           // Per-host noise budget/backoff state as a JSON object; omitted defaults to {}.
 	// InterceptRules stores task-local asset interception/allow rules in task_intercept_rules, never the global table.
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 }
@@ -1615,6 +1621,33 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.CompanyIDs = companyIDs
+	mode := db.TaskModePentest
+	if req.Mode != nil {
+		normalized, ok := db.NormalizeTaskMode(*req.Mode)
+		if !ok {
+			writeErr(w, 400, locale.Text(responseLanguage(w), "Task mode must be pentest or op"))
+			return
+		}
+		mode = normalized
+	}
+	coverStory := ""
+	if req.CoverStory != nil {
+		coverStory = strings.TrimSpace(*req.CoverStory)
+		if utf8.RuneCountInString(coverStory) > maxTaskNameRunes {
+			writeErr(w, 400, locale.Text(responseLanguage(w), "Task cover story must be at most %d characters", maxTaskNameRunes))
+			return
+		}
+	}
+	houseStyle, err := db.NormalizeTaskOpsecJSON(req.HouseStyle)
+	if err != nil {
+		writeErr(w, 400, locale.Text(responseLanguage(w), "house_style must be a JSON object"))
+		return
+	}
+	stealth, err := db.NormalizeTaskOpsecJSON(req.Stealth)
+	if err != nil {
+		writeErr(w, 400, locale.Text(responseLanguage(w), "stealth must be a JSON object"))
+		return
+	}
 	interceptRules, err := buildTaskInterceptRules(req.InterceptRules)
 	if err != nil {
 		writeErr(w, 400, locale.Text(responseLanguage(w), "Invalid task interception rules: ")+locale.ErrorMessage(responseLanguage(w), err))
@@ -1626,7 +1659,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,
-		InterceptRules:  interceptRules,
+		Mode:            &mode, CoverStory: &coverStory,
+		HouseStyle: houseStyle, Stealth: stealth,
+		InterceptRules: interceptRules,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrTaskCategoryInvalid) || errors.Is(err, db.ErrTaskCategoryNotFound) {

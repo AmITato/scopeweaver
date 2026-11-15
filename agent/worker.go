@@ -156,6 +156,9 @@ func (w *Worker) SetProfile(fn func() string) { w.profileFn = fn }
 
 func (w *Worker) profile() string { return resolveProfile(w.profileFn) }
 
+// Profile reports the resolved engagement profile (tests and diagnostics).
+func (w *Worker) Profile() string { return w.profile() }
+
 // SetRunTimeout configures the per-intent wall-clock budget for the main
 // exploration (0 = unlimited). When it fires, the SDK settlement phase still runs
 // so facts are never lost to a timeout. Safe to call before Execute.

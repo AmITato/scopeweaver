@@ -571,6 +571,10 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	workerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker"}
 	mainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "mainagent"}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
+	// The engagement profile is read from the task row on every run, so switching a task
+	// to op adds the stealth tail on its next turn and back to pentest removes it.
+	taskNum, _ := strconv.ParseInt(t.ID, 10, 64)
+	profile := func() string { return s.m.pg.TaskOpsec(taskNum).Mode }
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
 	wk.SetFindingRecorder(s.evidenceStore())
@@ -581,6 +585,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // Experimental noa compaction: platform-level flag read once per run.
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	wk.SetProfile(profile)
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // Inject operation constraints into workers; configurable and enabled by default.
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
@@ -593,6 +598,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
 	pl.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	pl.SetProfile(profile)
 	pl.SetWebSearch(s.webSearchFor("planner"))
 	pl.SetConstraintInject(s.constraintInjectPlanner) // Inject operation constraints into planners; configurable and enabled by default.
 	// Cold-digest section 7: background cold-node compaction. The engine's authoritative resolver runs
@@ -609,6 +615,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetMaxTokens(mainRuntime.maxTokens)
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // Experimental noa compaction: platform-level flag read once per run.
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	main.SetProfile(profile)
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork) // steer_work lets the user correct running work in real time.
 	bundle := &taskAgentBundle{

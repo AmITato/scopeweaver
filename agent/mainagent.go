@@ -67,6 +67,9 @@ func (m *MainAgent) SetProfile(fn func() string) { m.profileFn = fn }
 
 func (m *MainAgent) profile() string { return resolveProfile(m.profileFn) }
 
+// Profile reports the resolved engagement profile (tests and diagnostics).
+func (m *MainAgent) Profile() string { return m.profile() }
+
 // SetNativeOllamaResolver resolves whether the current run uses native Ollama.
 func (m *MainAgent) SetNativeOllamaResolver(fn func() bool) { m.nativeOllamaFn = fn }
 

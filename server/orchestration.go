@@ -308,12 +308,29 @@ func (s *Server) toolSpawnTask(langs ...locale.Lang) actool.CoreTool {
 			if pin != nil {
 				llmIDs = []int64{*pin}
 			}
+			// Engagement profile and cover story follow the parent: a stealth child must not
+			// silently fall back to pentest framing (docs/opsec-blend.md §13).
+			var inheritMode, inheritCover *string
+			if a.ParentRef != "" {
+				if pt, ok := s.m.Task(a.ParentRef); ok {
+					if pt.Mode != "" && pt.Mode != db.TaskModePentest {
+						mode := pt.Mode
+						inheritMode = &mode
+					}
+					if pt.CoverStory != "" {
+						cover := pt.CoverStory
+						inheritCover = &cover
+					}
+				}
+			}
 			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
 				Language:             s.childTaskLanguage(ctx, a.ParentRef),
 				SourceTaskIDs:        sourceIDs,
 				LLMProfileIDs:        llmIDs,
 				TimeoutSeconds:       a.TimeoutSeconds,
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
+				Mode:                 inheritMode,
+				CoverStory:           inheritCover,
 			})
 			if err != nil {
 				return actool.Errorf(locale.ErrorMessage(locale.FromContext(ctx), err)), nil

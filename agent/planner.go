@@ -116,6 +116,9 @@ func (p *Planner) SetProfile(fn func() string) { p.profileFn = fn }
 
 func (p *Planner) profile() string { return resolveProfile(p.profileFn) }
 
+// Profile reports the resolved engagement profile (tests and diagnostics).
+func (p *Planner) Profile() string { return p.profile() }
+
 // todoFor returns the task's persistent planning todo store, creating it on first
 // use. Shared across all of this task's planner wake-ups.
 func (p *Planner) todoFor(expID int64) *actool.TodoStore {

@@ -193,3 +193,30 @@ func TestTaskOpsecPatchAuthAndValidation(t *testing.T) {
 		t.Fatalf("stealth reset = %v", out["stealth"])
 	}
 }
+
+// TestAgentsForTaskProfileFollowsMode pins the server wiring: the prompt builders
+// must read the task row's engagement profile, not a value fixed at creation.
+func TestAgentsForTaskProfileFollowsMode(t *testing.T) {
+	s, task, _ := opsecTestServer(t)
+	taskID, err := strconv.ParseInt(task.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := s.agentsForTask(task)
+	if got := bundle.wk.Profile(); got != db.TaskModePentest {
+		t.Fatalf("worker profile = %q, want pentest by default", got)
+	}
+	if got := bundle.pl.Profile(); got != db.TaskModePentest {
+		t.Fatalf("planner profile = %q, want pentest by default", got)
+	}
+	if got := bundle.main.Profile(); got != db.TaskModePentest {
+		t.Fatalf("main profile = %q, want pentest by default", got)
+	}
+	mode := db.TaskModeOp
+	if _, err := s.m.pg.UpdateTask(taskID, db.TaskPatch{Mode: &mode}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.agentsForTask(task).wk.Profile(); got != db.TaskModeOp {
+		t.Fatalf("worker profile after switch = %q, want op", got)
+	}
+}

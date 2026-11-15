@@ -2975,7 +2975,15 @@ export const en = {
   "m2885": "This domain and all its subdomains",
   "m2886": "marks this intent as deleted and records the reason. Its node, execution records, registered facts, and vulnerabilities",
   "m2887": ". The planner receives the user deletion and reason and replans accordingly.",
-  "m2888": "Keep data and traceability"
+  "m2888": "Keep data and traceability",
+  "m2889": "Mode",
+  "m2890": "Pentest",
+  "m2891": "Op",
+  "m2892": "Cover story",
+  "m2893": "Contractor doing QuickBooks token integration",
+  "m2894": "Pentest keeps today's coverage-first run. Op treats the target as a live simulation with a watching blue team.",
+  "m2895": "In op mode, stealth budgeting and residue tracking apply.",
+  "m2896": "Op mode needs a cover story."
 };
 export const ko: Record<keyof typeof en, string> = {
   fuzzyDomainHelp: "도메인(부분 일치)은 레이블 단위로 일치합니다. 차단: .gov는 x.gov, x.gov.uk와 일치하지만 a.government.com과는 일치하지 않습니다. 허용: juice-shop.internal은 해당 도메인과 a.juice-shop.internal에 일치하지만 juice-shop.internal2, juice-shop.internal.attacker.com에는 일치하지 않습니다.",
@@ -5953,5 +5961,13 @@ export const ko: Record<keyof typeof en, string> = {
   "m2885": "이 도메인과 모든 하위 도메인",
   "m2886": "이 의도를 삭제됨으로 표시하고 사유를 기록합니다. 의도 노드, 실행 기록, 등록된 사실 및 취약점은",
   "m2887": ". 플래너는 사용자 삭제 및 사유를 전달받아 이를 반영하여 다시 계획합니다.",
-  "m2888": "데이터 및 추적 가능성 유지"
+  "m2888": "데이터 및 추적 가능성 유지",
+  "m2889": "모드",
+  "m2890": "펜테스트",
+  "m2891": "작전",
+  "m2892": "커버 스토리",
+  "m2893": "QuickBooks 토큰 연동을 맡은 외주 업체",
+  "m2894": "펜테스트는 지금의 범위 우선 실행을 유지합니다. 작전 모드는 대상을 지켜보는 블루팀이 있는 실전 시뮬레이션으로 다룹니다.",
+  "m2895": "작전 모드에서는 은밀 대역폭 예산과 잔여물 추적이 적용됩니다.",
+  "m2896": "작전 모드에는 커버 스토리가 필요합니다.",
 };

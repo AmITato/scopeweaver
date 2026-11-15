@@ -125,7 +125,10 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   "localOnlyOff": "Red LLM exclusivamente local desactivada",
   "allowlistSaved": "CIDR de confianza guardados",
   "updateLocalOnly": "Las comprobaciones de actualizaciones y las descargas están desactivadas porque la red LLM exclusivamente local está activada. Es intencionado, no un problema de conexión. La versión actual y la reversión siguen disponibles; desactiva el modo exclusivamente local para buscar actualizaciones.",
-  "judgeLoadFailed": "No se pudieron cargar los ajustes de aprobación guardados; se ha desactivado el guardado para evitar sobrescribirlos con valores predeterminados."
+  "judgeLoadFailed": "No se pudieron cargar los ajustes de aprobación guardados; se ha desactivado el guardado para evitar sobrescribirlos con valores predeterminados.",
+  "engagementDefaultsTitle": "Valores predeterminados de la participación",
+  "engagementDefaultsDesc": "Perfil con el que empiezan las tareas nuevas. <b>Pentest</b> mantiene el comportamiento actual centrado en la cobertura; <b>Op</b> modela un objetivo vigilado con presupuestos de sigilo y seguimiento de residuos.",
+  "defaultMode": "Modo predeterminado"
 };
 import type { en as englishSource } from './english.ts';
 export const english: Record<keyof typeof englishSource, string> = {
@@ -3211,7 +3214,15 @@ const interfaceMessages: Record<keyof typeof interfaceSource, string> = {
   "m2885": "Este dominio y todos sus subdominios",
   "m2886": "marca esta intención como eliminada y registra el motivo. Su nodo, registros de ejecución, hechos registrados y vulnerabilidades",
   "m2887": ". El planificador recibe la eliminación del usuario y su motivo y adapta el plan.",
-  "m2888": "Conservar datos y trazabilidad"
+  "m2888": "Conservar datos y trazabilidad",
+  "m2889": "Modo",
+  "m2890": "Pentest",
+  "m2891": "Op",
+  "m2892": "Historia de cobertura",
+  "m2893": "Contratista integrando el token de QuickBooks",
+  "m2894": "Pentest mantiene la ejecución actual centrada en la cobertura. Op trata el objetivo como una simulación real con un equipo azul observando.",
+  "m2895": "En el modo op se aplican presupuestos de sigilo y seguimiento de residuos.",
+  "m2896": "El modo op requiere una historia de cobertura."
 };
 export { interfaceMessages as interface };
 import type { en as appSource } from './app.ts';

@@ -95,8 +95,8 @@ function checkCatalog(source, translated, locale) {
 
 test("every shipped catalog is complete and preserves placeholders and rich tags", () => {
   // 3271 existing six-language keys + 12 OpenCode SDK bridge labels and guidance
-  // + 3 unfinished-worker soft-delete fragments (#62).
-  assert.equal(Object.keys(catalogs.en).length, 3286);
+  // + 3 unfinished-worker soft-delete fragments (#62) + 11 cover/style/engagement-default keys.
+  assert.equal(Object.keys(catalogs.en).length, 3297);
   assert.deepEqual(catalogLocales.sort(), [...LOCALES].sort());
   assert.deepEqual(Object.keys(catalogs).sort(), [...LOCALES].sort());
   for (const locale of LOCALES) checkCatalog(catalogs.en, catalogs[locale], locale);

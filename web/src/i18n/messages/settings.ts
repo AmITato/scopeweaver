@@ -43,6 +43,9 @@ export const en = {
   allowlistSaved: "Trusted CIDRs saved",
   updateLocalOnly: "Update checks and downloads are off because local-only LLM networking is on. This is deliberate, not a connection problem. The current version and rollback remain available; turn local-only mode off to check for updates.",
   judgeLoadFailed: "The saved approval settings could not be loaded, so saving is disabled to avoid overwriting them with defaults.",
+  engagementDefaultsTitle: "Engagement defaults",
+  engagementDefaultsDesc: "The profile new tasks start with. <b>Pentest</b> keeps today’s coverage-first behaviour; <b>Op</b> models a watched target with stealth budgets and residue tracking.",
+  defaultMode: "Default mode",
 };
 export const ko: Record<keyof typeof en, string> = {
   judgeUsageTitle: "승인 토큰 사용량",
@@ -88,4 +91,7 @@ export const ko: Record<keyof typeof en, string> = {
   allowlistSaved: "신뢰 CIDR을 저장했습니다",
   updateLocalOnly: "로컬 전용 LLM 네트워크가 켜져 있어 업데이트 확인과 다운로드를 사용할 수 없습니다. 연결 문제가 아니라 의도된 동작입니다. 현재 버전 확인과 롤백은 계속 사용할 수 있으며, 업데이트를 확인하려면 로컬 전용 모드를 끄세요.",
   judgeLoadFailed: "저장된 승인 설정을 불러오지 못했습니다. 기본값으로 덮어쓰지 않도록 저장을 막았습니다.",
+  engagementDefaultsTitle: "참여 기본값",
+  engagementDefaultsDesc: "새 작업이 시작할 프로필입니다. <b>펜테스트</b>는 지금의 범위 우선 동작을 유지하고, <b>작전</b>은 감시당하는 대상을 전제로 은밀 대역폭 예산과 잔여물 추적을 적용합니다.",
+  defaultMode: "기본 모드",
 };

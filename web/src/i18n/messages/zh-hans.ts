@@ -3270,7 +3270,15 @@ const interfaceMessages: Record<keyof typeof interfaceSource, string> = {
   m2885: "此域名及其所有子域名",
   m2886: "会把该意图置为「已删除」并记录删除原因，意图节点、执行记录、 已登记的事实和漏洞",
   m2887: "。规划者会收到「该意图由用户删除 + 原因」并据此重新规划。",
-  m2888: "保留数据，可追溯"
+  m2888: "保留数据，可追溯",
+  m2889: "模式",
+  m2890: "渗透测试",
+  m2891: "行动",
+  m2892: "掩护故事",
+  m2893: "负责 QuickBooks 令牌集成的外包人员",
+  m2894: "渗透测试保持当前的覆盖优先流程。行动模式将目标视为有蓝队监视的实战演练。",
+  m2895: "行动模式下会应用隐蔽限速预算和残留物跟踪。",
+  m2896: "行动模式需要有掩护故事。"
 };
 
 export { interfaceMessages as interface };
@@ -3441,4 +3449,7 @@ export const settings: Record<keyof typeof settingsSource, string> = {
   updateLocalOnly:
     "已开启仅本地 LLM 网络，因此无法检查或下载更新。这是有意为之，并非连接问题。当前版本和回滚仍然可用；如需检查更新，请关闭仅本地模式。",
   judgeLoadFailed: "无法加载已保存的审批设置，为避免用默认值覆盖，已禁用保存。",
+  engagementDefaultsTitle: "项目默认值",
+  engagementDefaultsDesc: "新任务启动时使用的模式。<b>渗透测试</b>保持当前的覆盖优先行为；<b>行动</b>按被监视的目标建模，应用隐蔽限速预算和残留物跟踪。",
+  defaultMode: "默认模式",
 };

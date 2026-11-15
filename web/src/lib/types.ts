@@ -3,6 +3,8 @@
 
 export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
+// Engagement profile: pentest keeps coverage-first behaviour, op adds stealth budgeting and residue tracking.
+export type TaskMode = "pentest" | "op";
 
 export interface Task {
   id: string;
@@ -39,6 +41,10 @@ export interface Task {
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation
   coverage_enabled?: boolean; // Coverage feature switch set at creation, on by default; false disables calculation/display.
+  mode?: TaskMode; // Engagement profile; absent means pentest.
+  cover_story?: string; // One line describing what this intrusion looks like from inside.
+  house_style?: Record<string, unknown>; // Target conventions captured as a naming grammar.
+  stealth?: Record<string, unknown>; // Stealth budget and backoff state.
 }
 
 export interface TaskCategory {
@@ -56,6 +62,10 @@ export interface TaskTemplate {
   goal: string;
   category_id?: number | null; // Preset category; null/omitted means none.
   intercept_rules?: AssetInterceptRuleInput[]; // Preset task-specific block/allow rules.
+  mode?: TaskMode; // Preset engagement profile.
+  cover_story?: string; // Preset cover story.
+  house_style?: Record<string, unknown>; // Preset naming grammar.
+  stealth?: Record<string, unknown>; // Preset stealth budget.
   created_at: string;
   updated_at: string;
 }
@@ -945,6 +955,8 @@ export interface Settings {
   // Per-profile cap on simultaneous in-flight LLM requests; 0 = unlimited.
   // Each profile's provider gets its own semaphore, shared across its agents.
   llm_max_concurrent?: number;
+  // Engagement default profile applied to new tasks; pentest keeps existing behaviour.
+  default_task_mode?: TaskMode;
   // Opt-in zero-egress policy for LLM HTTP only; defaults to false. An environment true cannot be disabled here.
   local_llm_only?: boolean;
   // CIDRs trusted in addition to loopback while local_llm_only is on; LAN/Docker hosts need an entry.

@@ -11,10 +11,14 @@ import (
 )
 
 // RuntimePolicy selects the native Ollama context safeguards without changing
-// the historical context management of cloud and compatible providers.
+// the historical context management of cloud and compatible providers. It also
+// carries the engagement profile for callers that have no agent struct of their
+// own (the one-shot goals decomposer).
 type RuntimePolicy struct {
 	NativeOllama  bool
 	ContextWindow int
+	// Profile is the engagement profile, "pentest" (default when empty) or "op".
+	Profile string
 }
 
 func applyRuntimePolicy(opts *agentcore.Options, policy RuntimePolicy) {

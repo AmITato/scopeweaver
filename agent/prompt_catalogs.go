@@ -13,6 +13,7 @@ func init() {
 	templates := map[string]string{
 		"goalsDefaultTmpl":          goalsDefaultTmpl,
 		"goalsScopeTail":            goalsScopeTail,
+		"opsecBlockText":            opsecBlockText,
 		"plannerDefaultTmpl":        plannerDefaultTmpl,
 		"pentestDefaultTmpl":        pentestDefaultTmpl,
 		"autoDefaultTmpl":           autoDefaultTmpl,

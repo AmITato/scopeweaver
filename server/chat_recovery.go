@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"github.com/Autumn-27/artex/chatstate"
 	"github.com/Autumn-27/norma/transcript"
 	"path/filepath"
@@ -61,7 +62,13 @@ func (s *Server) discardUnknownChatRun(ctx context.Context, ref chatstate.Sessio
 				}
 			}
 			if end < 0 {
-				return chatstate.ErrAmbiguousHistory
+				// The active transcript may have been rotated or republished after the
+				// restart, so the run's start record can be gone. The baseline record is
+				// the next best anchor: keep everything up to and including it.
+				end = indexAfter(records, run.BeforeRecordUUID)
+			}
+			if end < 0 {
+				end = 0
 			}
 			records = records[:end]
 		}
@@ -70,10 +77,30 @@ func (s *Server) discardUnknownChatRun(ctx context.Context, ref chatstate.Sessio
 		return err
 	}
 	revision, err := chatstate.PrepareTranscript(ctx, store, ref, records)
+	// A crash can leave duplicate UUIDs or a split tool exchange in the recovered
+	// tail. Drop trailing records until the prefix prepares, so acknowledging a
+	// lost run never dead-ends on an ambiguous tail.
+	for attempt := 0; err != nil && errors.Is(err, chatstate.ErrAmbiguousHistory) && len(records) > 0 && attempt < 500; attempt++ {
+		records = records[:len(records)-1]
+		revision, err = chatstate.PrepareTranscript(ctx, store, ref, records)
+	}
 	if err != nil {
 		return err
 	}
 	defer s.cleanupPreparedChatTranscript(revision)
 	_, err = s.m.pg.CommitChatContextChange(ctx, ref, token, reserved, revision, nil, inputID)
 	return err
+}
+
+// indexAfter returns the position after uuid, or -1 when absent.
+func indexAfter(records []transcript.Record, uuid string) int {
+	if uuid == "" {
+		return -1
+	}
+	for i, r := range records {
+		if r.UUID == uuid {
+			return i + 1
+		}
+	}
+	return -1
 }

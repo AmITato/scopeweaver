@@ -7,6 +7,7 @@ import (
 	"github.com/Autumn-27/artex/chatstate"
 	"github.com/Autumn-27/artex/sidequestion"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,69 @@ func TestChatManualCompactAtomic(t *testing.T) {
 	if stable.TranscriptID != after.TranscriptID {
 		t.Fatal("CAS failure changed pointer")
 	}
+}
+
+// TestDiscardUnknownSurvivesRotatedTranscript covers a restart that republished
+// history after the lost run: the start record is no longer in the active
+// transcript, so the baseline record must anchor the truncation.
+func TestDiscardUnknownSurvivesRotatedTranscript(t *testing.T) {
+	f := newHistoryFixture(t)
+	first := f.turn(t, "safe first")
+	input, err := f.s.m.pg.AdmitChatInput(t.Context(), f.ref, "lost", "send", "", chatstate.Prompt{Text: "lost-prompt-sentinel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost, err := f.s.m.pg.ClaimNextChatInput(t.Context(), f.ref.GateKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.s.m.pg.RecordChatTranscriptBaseline(t.Context(), lost.ID, first.EndRecordUUID); err != nil {
+		t.Fatal(err)
+	}
+	writer := f.store.ResumeWriter(lost.TranscriptID, first.EndRecordUUID)
+	writer.RecordMessage(llm.UserText("lost-prompt-sentinel"), llm.Usage{})
+	if err = f.s.m.pg.RecoverChatRuns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Rotate: publish a fresh copy of the current history, so the active
+	// transcript no longer contains the lost run's start record.
+	old, _ := f.store.Load(f.store.MainPath(first.TranscriptID))
+	prepared, e := chatstate.PrepareTranscript(t.Context(), f.store, f.ref, old)
+	if e != nil {
+		t.Fatal(e)
+	}
+	before, _ := f.s.m.pg.ChatControlState(t.Context(), f.ref)
+	if e = f.s.m.pg.PublishChatHistory(t.Context(), f.ref, before.Revision, prepared); e != nil {
+		t.Fatal(e)
+	}
+	state, _ := f.s.m.pg.ChatControlState(t.Context(), f.ref)
+	if err = f.s.discardUnknownChatRun(t.Context(), f.ref, input.ID, state.Revision); err != nil {
+		t.Fatalf("discard after rotation: %v", err)
+	}
+	active, err := f.s.m.pg.ActiveChatTranscript(t.Context(), f.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := f.store.Load(f.store.MainPath(active.TranscriptID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range records {
+		if strings.Contains(transcriptText(r), "lost-prompt-sentinel") {
+			t.Fatalf("lost prompt survived discard: %+v", r)
+		}
+	}
+}
+
+func transcriptText(r transcript.Record) string {
+	if r.Message == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, block := range r.Message.Content {
+		b.WriteString(block.Text)
+	}
+	return b.String()
 }
 
 func TestChatManualCompactDiscardDoesNotReplayLostPrompt(t *testing.T) {

@@ -2039,5 +2039,6 @@
   "open residue remains": "仍有未清理的殘留物",
   "residue rank must be obvious, plausible or keep": "殘留物等級必須為 obvious、plausible 或 keep",
   "residue requires kind and locator": "殘留物需要 kind 和 locator",
-  "residue requires task context": "殘留物需要任務上下文"
+  "residue requires task context": "殘留物需要任務上下文",
+  "house style requires task context": "房屋風格需要任務上下文"
 }

@@ -104,6 +104,7 @@ func init() {
 	Register("open residue remains", "open residue remains", "정리되지 않은 잔류물이 남아 있습니다")
 	Register("residue rank must be obvious, plausible or keep", "residue rank must be obvious, plausible or keep", "잔류물 등급은 obvious, plausible 또는 keep이어야 합니다")
 	Register("residue requires kind and locator", "residue requires kind and locator", "잔류물에는 kind와 locator가 필요합니다")
+	Register("house style requires task context", "house style requires task context", "하우스 스타일에는 작업 컨텍스트가 필요합니다")
 	Register("residue requires task context", "residue requires task context", "잔류물에는 작업 컨텍스트가 필요합니다")
 	Register("Retest #%d · %s", "Retest #%d · %s", "재검증 #%d · %s")
 	Register("Retest result is too long (summary <= 16 KB, evidence <= 128 KB)", "Retest result is too long (summary <= 16 KB, evidence <= 128 KB)", "재검증 결과가 너무 깁니다(summary 16KB 이하, evidence 128KB 이하)")

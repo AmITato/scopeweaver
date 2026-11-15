@@ -2039,5 +2039,6 @@
   "open residue remains": "未処理の残留物が残っています",
   "residue rank must be obvious, plausible or keep": "残留物のランクは obvious、plausible、keep のいずれかです",
   "residue requires kind and locator": "残留物には kind と locator が必要です",
-  "residue requires task context": "残留物にはタスクコンテキストが必要です"
+  "residue requires task context": "残留物にはタスクコンテキストが必要です",
+  "house style requires task context": "ハウススタイルにはタスクコンテキストが必要です"
 }

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -232,4 +233,24 @@ var _ = sql.ErrNoRows
 // OpenObviousResidue is the AssetStore view used by the prove_goal reply.
 func (s *AssetStore) OpenObviousResidue(taskID int64, limit int) ([]*Residue, error) {
 	return s.db.OpenObviousResidue(taskID, limit)
+}
+
+// SetHouseStyle persists a task's learned naming grammar (tasks.house_style).
+// The style tools already hold an AssetStore, not a DB, so they need this view.
+// See docs/opsec-blend.md §5.
+func (s *AssetStore) SetHouseStyle(taskID int64, raw json.RawMessage) error {
+	if taskID <= 0 {
+		return locale.Errorf("house style requires task context")
+	}
+	normalized, err := NormalizeTaskOpsecJSON(raw)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.UpdateTask(taskID, TaskPatch{HouseStyle: normalized})
+	return err
+}
+
+// TaskHouseStyle loads a task's raw stored grammar ("{}" when never harvested).
+func (s *AssetStore) TaskHouseStyle(taskID int64) json.RawMessage {
+	return s.db.TaskOpsec(taskID).HouseStyle
 }

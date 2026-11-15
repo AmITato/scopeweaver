@@ -2128,5 +2128,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listUntestedAssets(),
 		// residue_* drives the wrap-up: clean obvious objects, keep what must survive.
 		t.residueAdd(), t.residueList(), t.residueSet(), t.residueRemove(), t.residueKeepAll(),
+		// style_* captures the target's own naming; blend_name renders a conforming name.
+		t.styleRecord(), t.styleGet(), t.styleHarvest(), t.blendName(), t.styleClear(),
 	}
 }

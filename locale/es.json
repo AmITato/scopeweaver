@@ -2039,5 +2039,6 @@
   "open residue remains": "quedan residuos abiertos",
   "residue rank must be obvious, plausible or keep": "el rango de residuo debe ser obvious, plausible o keep",
   "residue requires kind and locator": "el residuo requiere kind y locator",
-  "residue requires task context": "el residuo requiere contexto de tarea"
+  "residue requires task context": "el residuo requiere contexto de tarea",
+  "house style requires task context": "el estilo requiere contexto de tarea"
 }

@@ -138,7 +138,43 @@ list that must be extended or values silently revert).
 
 ## 5. House style and naming
 
-### 5.1 Harvest
+Package `blend` is the whole implementation: `blend/types.go` (classes, records, stored shape),
+`blend/parse.go` (derivation), `blend/names.go` (generation and validation), `blend/harvest_github.go`
+and `blend/harvest_cloud.go` (read-only collectors). Everything except the two harvesters is pure;
+`Name` and `Validate` sort, hash and render without touching the clock or the network
+(`blend/names.go:26-28`). `Parse` stamps `ObservedAt` once (`blend/parse.go:37`).
+
+The grammar lives in `tasks.house_style` (§4) and is reached through `AssetStore.TaskHouseStyle` and
+`SetHouseStyle` (`db/residue.go:238-256`), which normalise through `NormalizeTaskOpsecJSON`. The tools
+are on the planner and worker sets and reach Auto/custom agents through `AllDomainTools`
+(`agent/tools.go:2132`, `agent/tools_insert.go:667`, `:694`, `:702-706`); the main agent does not carry
+them.
+
+The full engagement fixture — their convention, ours, and how each failed — is
+[opsec-blend-style.md](opsec-blend-style.md).
+
+### 5.1 Classes
+
+`blend.Class` is a string enum of ten artifact families (`blend/types.go:17-30`); `Classes()` fixes the
+display order (`:33-36`) and `ValidClass` gates input (`:124-131`).
+
+| class | governs | typical carrier |
+|---|---|---|
+| `branch` | branch names, and the ticket grammar itself | git ref, GitHub refs API |
+| `workflow` | `.github/workflows` file names | workflow file, Actions API |
+| `commit_subject` | commit message first line, and author names | commit object |
+| `iam_user` | IAM user names | `iam:ListUsers` |
+| `iam_role` | role and instance-profile names | `iam:ListRoles`, `ListInstanceProfiles` |
+| `tag_value` | values of `Name`, `Project`, `Environment` | `ec2:DescribeTags` |
+| `sg_name` | security-group names | `ec2:DescribeSecurityGroups` |
+| `sg_description` | security-group descriptions | same response |
+| `marker` | probe file names, git identities, UAs | host and HTTP surface |
+| `s3_key` | object key prefixes and file names | `s3:ListObjectsV2` |
+
+`commit_subject` carries author names as well as subjects: `harvest_github.go:81-82` records both under
+that class, distinguished only by the `:commits` / `:commit-authors` source suffix.
+
+### 5.2 Harvest
 
 Before the first active request, a read-only intent records the style. Sources per class:
 
@@ -153,21 +189,183 @@ Before the first active request, a read-only intent records the style. Sources p
 | S3 key prefixes | `s3:ListObjectsV2` |
 | UA and CLI versions | CloudTrail `LookupEvents.userAgent` |
 
+`GitHubSource.Repo` walks at most three pages of 100 branches and three pages of 30 commits, then the
+workflow endpoints (`harvest_github.go:35-122`). It only reads workflow files whose name contains
+`jira` or `branch` (`:245-249`), at most five per run (`blend/harvest.go:15`), and lifts the branch
+regex from `=~`, `grep -E`, `grep -P` or `pattern:` markers, keeping only literals that compile
+(`harvest_github.go:260-287`). `HarvestAWS` runs five independent reads and tolerates per-call failure;
+both harvesters cap a class at 120 observations for one run and de-duplicate (`harvest.go:11-13`,
+`:38-58`), so a partial harvest still returns. GitHub rate-limit exhaustion stops the walk rather than
+the task (`harvest_github.go:227-231`).
+
 Real example, this engagement: branches must match
-`^(DEV|TS|MKM|DS|DB|MES|APP)-[0-9]+` (enforced by `jira-check.yml:38`); workflows are lowercase
-kebab with no prefix; IAM users are `svc-<purpose>` or `<product>-<purpose>`; the only EC2 tag key is
-`Name`, Title Case with spaces; SG names are Title Case with spaces and descriptions are lowercase
-sentences.
+`^(DEV|TS|MKM|DS|DB|MES|APP)-[0-9]+` (enforced by `jira-check.yml:40`); workflows are lowercase kebab
+with no prefix; IAM users are `svc-<purpose>` or `<product>-<purpose>`; the only EC2 tag key is `Name`,
+Title Case with spaces; SG names are Title Case with spaces and descriptions are lowercase sentences.
 
-### 5.2 Generate
+### 5.3 Observation
 
-`blend` package: `blend/style.go` (parse and score conventions), `blend/names.go`
-(`Branch(purpose)`, `Workflow(purpose)`, `IAMUser(purpose)`, `TagValue`, `Marker`, `S3Key`). Grammar
-templates are data, not code. Fall back to a neutral shape only when a class was not observed, and
-record the fallback so it is visible as risk.
+`Observation` is one real sample plus provenance (`blend/types.go:38-43`):
 
-A generated name must pass the target's own validator where one exists. `jira-check.yml` would have
-rejected all 33 of our branches.
+```
+Observation{Class, Value, Source}
+```
+
+`Value` is the exact observed string; `Source` names where it was read (`github:o/r:branches`,
+`aws:<account>:ec2:describe-tags:Name`, `regex:` …). A validator travels in the `regex:` prefix on
+either field: `Source: "regex:^(DEV|TS)-…"` annotates a sample, while `Value: "regex:…"` with no
+`Source` is a regex-only observation that contributes structure and no example (`parse.go:131-150`).
+`Merge` re-derives the class from its stored examples plus the new sample, so a merge can never leave a
+stale template behind (`harvest.go:72-122`). Samples are capped at 120 per class per harvest and 5
+examples are retained for re-derivation (`harvest.go:11`, `parse.go:10-11`).
+
+### 5.4 Stored shape
+
+`tasks.house_style` holds the serialised `Style` (`blend/types.go:59-65`):
+
+```
+Style{Version, Classes map[Class]*ClassStyle, Sources, ObservedAt}
+```
+
+`StyleVersion` is 1 (`:68`). `Default()` is an empty class map, which is how a never-harvested task is
+told apart from a harvest (`:72-75`); `Empty`, `Clone`, `JSON` and `FromJSON` round it out, and damaged
+JSON falls back to `Default` rather than failing the read (`:78-121`).
+
+Each `ClassStyle` (`:48-57`) stores `Samples`, `Template`, `TicketKeys`, `Regex`, `Separator`, `Case`,
+`Confidence` and `Examples`. `Template` is the generation skeleton; `Regex`, when present, is the
+target's own validator and outranks everything else. `Case` is `lower | upper | title | asis`.
+`Sources` is de-duplicated and sorted on merge (`harvest.go:132-154`).
+
+### 5.5 Confidence
+
+Confidence is `clamp01(0.35*volume + 0.65*agreement) * clamp01(samples/3 + 0.34)` with
+`volume = min(samples/12, 1)` (`types.go:150-157`), so a single sample caps the score at 0.457 even with
+perfect agreement and two agreeing samples reach 0.708. Agreement is the share of usable samples that
+produced the winning shape (`parse.go:127-128`), so a class of ten different shapes stays low even with
+volume.
+
+The bands are `LearnFloor`/`LEARN_FLOOR` = 0.2 and `GenerateFloor`/`GENERATE_FLOOR` = 0.5
+(`types.go:133-138`). At or above the generate floor the class is usable; between the floors it is
+recorded but not trusted. `blend_name` refuses below the
+floor (`agent/tools_style.go:178-182`) and `style_get` reports the class under `unlearned` (`:125-139`).
+`LearnFloor` is a named band, not a gate: no code path compares against it today.
+
+A stored validator overrides the floor: `Name` only applies the confidence check when no regex exists
+(`names.go:40-42`), and a single regex-only observation can therefore generate (`blend_test.go:250-267`).
+A regex that does not compile is ignored rather than blocking generation (`names.go:36-39`).
+
+### 5.6 Ticket tokens
+
+A ticket token is only recognised at the start of a value:
+`^([A-Z]{2,5})-([0-9]{2,6})([-_/. ]|$)` (`parse.go:18-19`). Keys are also lifted from the alternation
+of a validator — `(DEV|TS|MKM|DS|DB|MES|APP)` yields seven keys (`:163-173`) — and a learned key is
+matched case-insensitively while keeping the observed spelling (`:175-208`).
+
+The key is chosen deterministically: with `seq > 0` it is `keys[(seq-1) % len(keys)]`, otherwise an
+FNV-1a hash of the purpose picks one; with no key at all it falls back to `DEV` (`names.go:252-262`).
+`{TICKET}` renders key, then `-`, then the number, so the number survives even when the template has no
+following `{N}` (`:148-160`). A template that also writes `{N}` right after `{TICKET}` therefore repeats
+the number: `{TICKET}-{N}-{Slug}` renders `DEV-4242-4242-Payment-Plan`.
+
+The number is not a real high-water ticket: `seq` is the caller's number or sequence override, and with
+none the generator uses an FNV-1a “plausible” four- or five-digit value plus bounded neighbours
+(`names.go:200-244`, `:26-27`). Collision with a live ticket is therefore possible and accepted.
+
+### 5.7 Separator and case
+
+`dominantSeparator` counts `/`, `-`, `_`, space and `.` only where the character sits between two word
+characters, ignoring decimal points and a final extension dot, and returns the most common with a fixed
+tie order (`parse.go:473-515`). `dominantCase` classifies each sample as `lower`, `upper`, `title` or
+`asis`, and breaks ties `lower → upper → title → asis` (`:409-471`); a name with no letters is `asis`.
+
+`applyCase` applies the mode to the slug, then swaps `-` for the separator when one was learned
+(`names.go:162-183`). `Validate` reverses the check: `lower` and `upper` compare against the whole name,
+`title` tolerates minor words, and any separator other than the learned one is rejected
+(`names.go:298-346`).
+
+### 5.8 Templates
+
+`Template` and the regex-derived skeleton use three placeholders: `{TICKET}`, `{Slug}` and `{N}`
+(`names.go:148-160`). `{Slug}` is the slugified purpose; digit runs collapse to a single `{N}`; up to one
+leading structural segment survives (a digit run, a 2–5 character uppercase token, or `svc`/`app`/`api`/
+`sg` for IAM classes) and everything after it becomes the slug (`parse.go:333-379`). A leading segment
+that itself contains a digit run stays fixed, which is why `Tier1 Web Server` yields `Tier{N} {Slug}`
+(`blend_test.go:67-74`).
+
+`regexSkeleton` converts a validator back into a template: a ticket alternation followed by a digit
+class becomes `{TICKET}`, `[0-9]` and `\d` become `{N}`, letter classes and `\w` become `{Slug}`, and
+unmodellable constructs truncate the skeleton there (`names.go:348-460`).
+
+### 5.9 Validator precedence
+
+A stored `Regex` is authoritative in both directions. `Name` compiles it, derives a skeleton from it,
+and tests every candidate against it before returning (`names.go:35-42`, `:95-97`). `Validate` returns
+success on a regex match without consulting case or separator, and returns `ErrNonConforming` on a
+mismatch (`names.go:116-123`).
+
+Candidates are enumerated in a fixed nested order — template, then skeleton; number, slug, separator,
+case — and the first match wins, 64 attempts at most (`names.go:83-102`). Slugs are shortened from the
+tail and finally replaced by `change` (`:185-198`); numbers start from `seq` and then walk plausible
+values and `seq+1 … seq+4` (`:200-230`). Exhausting the budget returns `ErrNoCandidate`
+(`names.go:19-21`, `:103`), never an unchecked name. Without a regex the first candidate is returned,
+because there is nothing to retry against.
+
+`blend_name` still validates its own output and reports `conforms: false` with up to three conforming
+`alternatives` when the stored validator rejects the primary result (`agent/tools_style.go:192-212`);
+the agent is told to take an alternative or record more samples rather than ship the name.
+
+### 5.10 Truncation
+
+`maxNameLength` is 100 runes (`names.go:13-14`). Every candidate passes through `clip` before the
+validator sees it (`:94`), so a truncated name is judged as it will ship. `clip` preserves a short
+trailing extension and the leading ticket, cuts at the last separator at or before the budget, trims
+trailing `-_/. ` and appends the extension back (`:264-296`). `{TICKET}-{Slug}` therefore keeps its
+ticket and loses slug words (`blend_test.go:313-331`).
+
+### 5.11 Determinism
+
+The same style, class, purpose and `seq` always produce the same bytes: there is no randomness, no map
+iteration in `Name`, and the only clock read is `ObservedAt` at parse time. Enumeration order is literal
+slice order (`names.go:84-101`); key choice is modular or hashed (`:252-262`); numbers are FNV-1a of the
+purpose (`:232-244`). Two independent parses of the same observations agree, which the suite asserts
+(`blend_test.go:333-360`). De-duplication keeps first-seen order, so observation order is stable
+semantics, not a detail.
+
+### 5.12 Reuse before create
+
+Reuse outranks generation. The stealth block says it plainly: "Reuse before creating: an existing
+service user, group, security group, subnet, instance profile, keypair or bucket prefix"
+(`agent/opsec.go:46`). The generation order that follows from the model:
+
+1. `style_get` before touching the target; read `usable` per class and the `unlearned` list.
+2. List the target's existing objects of that class (branches, users, SGs, prefixes).
+3. Reuse a matching object when the purpose fits, and record nothing in the ledger.
+4. Create only when nothing fits, naming through `blend_name`, and record the object in the residue
+   ledger (§6) as soon as it exists.
+
+`blend_name` is deliberately not a fallback for an unlearned class: it errors and points back at
+`style_record` rather than emitting an invented shape (`agent/tools_style.go:178-191`), which is what
+keeps `i<NNNN>` out of the target's namespace.
+
+### 5.13 Tools
+
+| tool | kind | behaviour |
+|---|---|---|
+| `style_record` | write | accepts `entries[]` or one `{class,value,source}`; per-item errors are returned by index and valid items still land (`agent/tools_style.go:30-106`) |
+| `style_get` | read | returns the style, per-class `{confidence,template,regex,samples,ticket_keys,separator,case,examples,usable}`, `unlearned`, `generate_floor` (`:107-149`) |
+| `blend_name` | read | `{class, purpose, seq}` → `{name, conforms, alternatives, note?}` (`:151-216`) |
+| `style_harvest` | write | `{repo?, account?}` reads the same classes from the GitHub API and the AWS CLI in one call, merges them, and reports per-class counts plus `unlearned`; one source failing does not discard the other (`:236-311`) |
+| `style_clear` | write | resets `tasks.house_style` to `Default()` and drops every example |
+
+`style_record` never invents: `Value` is the exact observed string, and `Source` is required by the
+description so a later reader can re-check the fixture. Unknown classes and empty values are rejected
+per item (`agent/tools_style.go:74-80`). `style_clear` exists because a harvest taken from the wrong
+repository poisons every later name.
+
+Tests that pin this section: `blend/blend_test.go:32-117` (parse the engagement's real shapes),
+`:119-197` (generate and validate them), `:222-248` (regex authoritative and retried), `:313-331`
+(truncation), `:333-360` (determinism); `agent/tools_style_test.go` covers the tool refusals and the
+`style_record` pointer in each message.
 
 ## 6. Residue ledger
 

@@ -220,3 +220,32 @@ func TestAgentsForTaskProfileFollowsMode(t *testing.T) {
 		t.Fatalf("worker profile after switch = %q, want op", got)
 	}
 }
+
+// TestResidueBlocksCompletion pins the completion gate: pentest never blocks, op
+// blocks on obvious removable residue, and keep_all releases it.
+func TestResidueBlocksCompletion(t *testing.T) {
+	s, task, _ := opsecTestServer(t)
+	taskID, err := strconv.ParseInt(task.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.engine.residueBlocks(task) {
+		t.Fatal("pentest must not block completion")
+	}
+	mode := db.TaskModeOp
+	if _, err := s.m.pg.UpdateTask(taskID, db.TaskPatch{Mode: &mode}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.m.pg.AddResidue(taskID, "github_branch", "acme/widgets", "refs/heads/DEV-1-probe", "", db.ResidueRankObvious, true); err != nil {
+		t.Fatal(err)
+	}
+	if !s.engine.residueBlocks(task) {
+		t.Fatal("open obvious residue must block completion")
+	}
+	if _, err := s.m.pg.KeepAllResidue(taskID); err != nil {
+		t.Fatal(err)
+	}
+	if s.engine.residueBlocks(task) {
+		t.Fatal("keep_all must release the gate")
+	}
+}

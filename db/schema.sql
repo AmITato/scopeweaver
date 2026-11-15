@@ -682,6 +682,29 @@ DROP TRIGGER IF EXISTS trg_task_asset_links_upd ON task_asset_links;
 CREATE TRIGGER trg_task_asset_links_upd BEFORE UPDATE ON task_asset_links
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- Created external objects, tracked for cleanup. Deliberately a worklist, not an
+-- audit log: wrong-but-recoverable beats unrecorded. rank decides what blocks
+-- completion (obvious), what may pass as normal work (plausible) and what must
+-- survive (keep). See docs/opsec-blend.md §6.
+CREATE TABLE IF NOT EXISTS task_residue (
+    id                  BIGSERIAL PRIMARY KEY,
+    task_id             BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    kind                TEXT NOT NULL,
+    target              TEXT NOT NULL DEFAULT '',
+    locator             TEXT NOT NULL,
+    fiction             TEXT NOT NULL DEFAULT '',
+    rank                TEXT NOT NULL DEFAULT 'obvious',
+    removable           BOOLEAN NOT NULL DEFAULT true,
+    evidence_finding_id BIGINT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    removed_at          TIMESTAMPTZ,
+    CONSTRAINT ck_task_residue_rank CHECK (rank IN ('obvious','plausible','keep'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_residue_open ON task_residue(task_id, rank, id)
+    WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_task_residue_task ON task_residue(task_id, id DESC);
+-- findings is created later in this file, so the evidence link is added there.
+
 -- Keep provenance rows synchronized when existing asset upsert paths append or
 -- remove task ids. Detailed callers overwrite the generic source after upsert.
 CREATE OR REPLACE FUNCTION sync_task_asset_links() RETURNS trigger AS $$
@@ -1126,6 +1149,9 @@ CREATE TABLE IF NOT EXISTS findings (
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS name   TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS report TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_residue DROP CONSTRAINT IF EXISTS fk_task_residue_finding;
+ALTER TABLE task_residue ADD CONSTRAINT fk_task_residue_finding
+    FOREIGN KEY (evidence_finding_id) REFERENCES findings(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);

@@ -137,6 +137,7 @@ type Engine struct {
 	steerBox map[int64][]string
 
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
+	residueWarn  sync.Map // taskID -> int, last open-obvious count already warned (dedupes completion refusals)
 
 	// Task-level timeout coordination:
 	settling     sync.Map // taskID -> bool: settling has begun; stop dispatching/claiming new intents.
@@ -856,6 +857,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
 			t.drainTriggers() // Discard accumulated done/finding triggers to prevent unbounded growth in long goalless sessions.
 			if active, err := t.Store.HasActiveIntent(); err == nil && !active {
+				// Obvious residue holds completion open on op tasks; the sweeper empties it.
+				if e.residueBlocks(t) {
+					return
+				}
 				// No open or running intents remain: finish with a guarded compare-and-swap to avoid overwriting
 				// concurrent pause, deletion, or timeout-settlement transitions.
 				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
@@ -895,6 +900,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning failed: %v"), t.ID, err)
 		case met:
 			log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s determined goals met: %s"), t.ID, reason)
+			if e.residueBlocks(t) {
+				break
+			}
 			// All goals met: persist done, which the frontend DTO prioritizes over runtime state.
 			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
 				log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s could not persist completion: %v"), t.ID, err)
@@ -1243,6 +1251,34 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 	case <-time.After(d):
 		return false
 	}
+}
+
+// residueBlocks reports whether completion must wait for cleanup on an op task.
+// The first blocked attempt per distinct count emits one activity listing the
+// blockers; later wakes stay quiet.
+func (e *Engine) residueBlocks(t *Task) bool {
+	n, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil || e.m.pg == nil {
+		return false
+	}
+	open, blocked, err := e.m.pg.ResidueCompletionGate(n)
+	if err != nil || !blocked {
+		return false
+	}
+	if last, ok := e.residueWarn.Load(n); ok && last.(int) == open {
+		return true
+	}
+	e.residueWarn.Store(n, open)
+	var b strings.Builder
+	if rows, err := e.m.pg.OpenObviousResidue(n, 5); err == nil {
+		for _, r := range rows {
+			fmt.Fprintf(&b, "\n- #%d %s %s", r.ID, r.Kind, r.Locator)
+		}
+	}
+	e.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: fmt.Sprintf(
+		locale.Text(locale.FromContext(context.Background()), "Completion held: %d obvious residue object(s) still open. Clean them with residue_remove, or residue_keep_all to accept the footprint.%s"),
+		open, b.String())})
+	return true
 }
 
 func (e *Engine) claimNext(t *Task, name string) *db.Node {

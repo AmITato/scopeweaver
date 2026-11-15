@@ -184,13 +184,20 @@ worklist.
 `rank` is assigned when the row is written: `obvious` (markers, probe workflows, temp users) is always
 removable; `plausible` (a contractor user, a branch) may be kept; `keep` (access we depend on) never.
 
+The gate blocks only rows that are `obvious`, `removable` and still open. A load-bearing object is
+recorded with `removable=false` until its access is replaced, so the gate never forces a choice between
+finishing and keeping the chain. `residue_keep_all` downgrades every open row to `keep` as the
+one-shot override.
+
 ### 6.1 Wrap-up gate
 
-Completion has three writers (`server/engine.go:861`, `:899`, `server/engine_timeout.go:219`). All
-three, plus `db.SetStatus`/`SetTerminalStatusGuarded` (`db/tasks.go:485-513`), refuse `done` while
-`op` residue of rank `obvious` is open, unless the close is forced. `prove_goal`
-(`agent/tools.go:1243-1262`) explains the block to the model with the count and the outstanding
-targets instead of silently staying `running`.
+Completion has three writers (`server/engine.go:861`, `:899`, `server/engine_timeout.go:219`). The two
+normal writers check `Engine.residueBlocks` before persisting `done`; timeout settlement bypasses the
+gate deliberately, because a timed-out task must still terminate. The first blocked attempt per
+distinct count emits one activity naming the blockers; repeat wakes stay quiet.
+
+`prove_goal` (`agent/tools.go:1243-1262`) reports the block with the count and the tools instead of
+claiming the task completed.
 
 A sweeper intent (`residue purge`) works the ledger in the opposite order of creation. Buttons in the
 residue tab call the same store so an operator can keep or drop a row by hand.

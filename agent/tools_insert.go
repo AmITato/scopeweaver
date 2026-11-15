@@ -661,6 +661,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.searchAllWorkerTraces(), t.getWorkerTrace(),
 		// node_detail fetches full details once the worker knows an intent/node ID.
 		t.nodeDetail(),
+		// Residue ledger: workers create external objects and must record them immediately.
+		t.residueAdd(), t.residueList(), t.residueSet(), t.residueRemove(), t.residueKeepAll(),
 		// Keep list_facts/list_companies/list_worker_traces with planner/main: workers
 		// execute and record one intent, while broader context review belongs to planning.
 	}
@@ -684,6 +686,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets supports type-filtered, paginated inspection for additional testing decisions.
 		t.listUntestedAssets(),
+		// residue_* drives the wrap-up: clean obvious objects, keep what must survive.
+		t.residueAdd(), t.residueList(), t.residueSet(), t.residueRemove(), t.residueKeepAll(),
 	}
 }
 

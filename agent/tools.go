@@ -1256,6 +1256,9 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 				if allMet {
 					t.markGoalMet(fmt.Sprintf(locale.Text(locale.FromContext(ctx), "All %d goals are met (last triggered by goal %d)"), len(goals), goal))
 					t.markTerminalProof(toolUseIDOf(tc)) // bind to the ORIGINATING call (terminal_proof.go)
+					if blocked, msg := t.residueBlocker(ctx); blocked {
+						return actool.Text(fmt.Sprintf(locale.Text(locale.FromContext(ctx), "goal %d marked met; all objectives are achieved, but completion waits: %s"), goal, msg)), nil
+					}
 					return actool.Text(fmt.Sprintf(locale.Text(locale.FromContext(ctx), "goal %d marked met; all task objectives are achieved and the task completes automatically"), goal)), nil
 				}
 			}
@@ -2123,5 +2126,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets supports type-filtered, paginated inspection to decide on further testing.
 		t.listUntestedAssets(),
+		// residue_* drives the wrap-up: clean obvious objects, keep what must survive.
+		t.residueAdd(), t.residueList(), t.residueSet(), t.residueRemove(), t.residueKeepAll(),
 	}
 }

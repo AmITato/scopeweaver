@@ -33,10 +33,11 @@ type ChatAgent struct {
 	proxyAddr      string
 	proxyCACert    string
 	webSearch      WebSearchOpts
-	guard          *guard.Guard // optional; nil disables intercept hooks for chat
-	nonStreamingFn func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn   func() bool  // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn    func() int   // resolver: per-reply output cap (nil/0 = send no cap)
+	guard          *guard.Guard  // optional; nil disables intercept hooks for chat
+	nonStreamingFn func() bool   // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn   func() bool   // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn    func() int    // resolver: per-reply output cap (nil/0 = send no cap)
+	profileFn      func() string // resolver: engagement profile ("pentest" default, "op" stealth; nil = pentest)
 }
 
 // SetNativeOllamaResolver resolves whether the current run uses native Ollama.
@@ -68,6 +69,13 @@ func (c *ChatAgent) maxTokens() int {
 	return c.maxTokensFn()
 }
 
+// SetProfile wires a resolver for the engagement profile ("pentest", the
+// default, or "op") used by every role this runner serves. Read per turn so a
+// task-level switch applies without a rebuild.
+func (c *ChatAgent) SetProfile(fn func() string) { c.profileFn = fn }
+
+func (c *ChatAgent) profile() string { return resolveProfile(c.profileFn) }
+
 // SetProxy points the chat agent's WebFetch/Bash at the recording proxy plus the
 // CA cert it trusts (empty addr = direct). Kept for parity with the other agents.
 func (c *ChatAgent) SetProxy(addr, caCert string) { c.proxyAddr, c.proxyCACert = addr, caCert }
@@ -88,6 +96,12 @@ func chatWorkDirSpec(workDir string, langs ...locale.Lang) string {
 
 // chatSystem preserves the role default if its stored template is missing or invalid.
 func chatSystem(agentKey, dataDir, workDir string, langs ...locale.Lang) string {
+	return chatSystemFor(agentKey, dataDir, workDir, ProfilePentest, langs...)
+}
+
+// chatSystemFor is chatSystem with an explicit engagement profile. The opsec tail
+// follows the file-output rules, before the output-language instruction appended by Chat.
+func chatSystemFor(agentKey, dataDir, workDir, profile string, langs ...locale.Lang) string {
 	def := DefaultAssistantPrompt
 	switch agentKey {
 	case "auto":
@@ -99,7 +113,7 @@ func chatSystem(agentKey, dataDir, workDir string, langs ...locale.Lang) string 
 	case "retester":
 		def = RetesterDefaultPrompt
 	}
-	return renderSystem(agentKey, def, chatVars{DataDir: dataDir, Now: nowStr()}, langs...) + chatWorkDirSpec(workDir, langs...)
+	return renderSystem(agentKey, def, chatVars{DataDir: dataDir, Now: nowStr()}, langs...) + chatWorkDirSpec(workDir, langs...) + opsecBlock(profile, langs...)
 }
 
 // chatVars carries the runtime variables a custom agent's prompt may reference.
@@ -137,7 +151,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
 
-	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir, locale.FromContext(ctx)), def)
+	system, boundary := deferredSystem(chatSystemFor(agentKey, c.workDir, sessionWorkDir, c.profile(), locale.FromContext(ctx)), def)
 	opts := agentcore.Options{
 		Provider:        c.prov,
 		SystemPrompt:    append(system, outputLanguageInstruction(locale.FromContext(ctx))),
@@ -159,7 +173,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		DeepSeekSearchAPIKey:  ws.DeepSeekAPIKey,
 		DeepSeekSearchModel:   ws.DeepSeekModel,
 		WebSearchProxy:        ws.Proxy,
-		BashEnv:               proxyEnv(c.proxyAddr, c.proxyCACert), // Bash subprocesses inherit the proxy and trusted CA.
+		BashEnv:               append(proxyEnv(c.proxyAddr, c.proxyCACert), quietPathEnv(c.profile())...), // Bash inherits the proxy, CA and op shims.
 		WorkingDir:            sessionWorkDir,
 		MaxTurns:              maxTurns,
 		MaxDuration:           maxDuration,

@@ -35,6 +35,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	profileFn       func() string                          // resolver: engagement profile ("pentest" default, "op" stealth; nil = pentest)
 }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
@@ -58,6 +59,13 @@ func (m *MainAgent) maxTokens() int {
 	}
 	return m.maxTokensFn()
 }
+
+// SetProfile wires a resolver for this task's engagement profile ("pentest",
+// the default, or "op"). Read per run so a task-level switch applies without a
+// rebuild.
+func (m *MainAgent) SetProfile(fn func() string) { m.profileFn = fn }
+
+func (m *MainAgent) profile() string { return resolveProfile(m.profileFn) }
 
 // SetNativeOllamaResolver resolves whether the current run uses native Ollama.
 func (m *MainAgent) SetNativeOllamaResolver(fn func() bool) { m.nativeOllamaFn = fn }
@@ -89,11 +97,17 @@ func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.
 // mainAgentDefaultTmpl is the built-in editable body (section [A]) of the main-agent
 // prompt, seeded into agent_prompts. Goal uses {{.Goal}}; the intermediate-artifact
 // output rules are code-owned and appended by artifactSpec after rendering.
-const mainAgentDefaultTmpl = "You are the main agent of an authorized penetration-testing system and the human operator's interface. Do not explore personally or continuously generate autonomous intents; planning belongs to the planner.\n\n1. Observe: answer progress questions using graph_overview, list_findings, list_facts, list_assets, and get_worker_output.\n2. Translate the operator's direction into platform actions:\n- Change direction, emphasize a vulnerability class, or focus on an area: use add_hint for the planner's next round.\n- Test a specific target immediately: inject a high-priority intent (priority 8-10) with add_intent. A completed task automatically resumes for that intent and returns to completed when it finishes.\n  If all goals are met in graph_overview, first decide whether the request implies a NEW final outcome. If so, restate your inferred goal and ask whether to register it formally. If the user agrees, use set_goals, allowing normal autonomous planning to continue. If they decline or want only a one-off check, use add_intent alone; the task completes again after that worker finishes. No need to ask for an obviously one-off check with no new objective.\n- Steer a running worker (stop approach X, focus on Y): inspect get_worker_output first, then use steer_work. It applies before the next action without interruption or loss of progress. For an entirely different direction, create a new intent with add_intent.\n- Add a final objective: use set_goals. This automatically resumes completed/paused tasks; the planner subsequently evaluates completion. No manual resume is needed.\n- Add/change testing constraints (only this port, no brute force, passive reconnaissance only): use set_constraints with type=allow or type=deny. Constraints are injected into planner/worker prompts on the next round; operators can also edit them in constraint management.\n3. Reply concisely in plain language and state what you did.\n\nCurrent task objective: {{.Goal}}\nNever invent findings. Answer only from actual tool results."
+const mainAgentDefaultTmpl = "You are the main agent of a security engagement run as a live-fire simulation with an observing blue team, and the human operator's interface. Do not explore personally or continuously generate autonomous intents; planning belongs to the planner.\n\n1. Observe: answer progress questions using graph_overview, list_findings, list_facts, list_assets, and get_worker_output.\n2. Translate the operator's direction into platform actions:\n- Change direction, emphasize a vulnerability class, or focus on an area: use add_hint for the planner's next round.\n- Test a specific target immediately: inject a high-priority intent (priority 8-10) with add_intent. A completed task automatically resumes for that intent and returns to completed when it finishes.\n  If all goals are met in graph_overview, first decide whether the request implies a NEW final outcome. If so, restate your inferred goal and ask whether to register it formally. If the user agrees, use set_goals, allowing normal autonomous planning to continue. If they decline or want only a one-off check, use add_intent alone; the task completes again after that worker finishes. No need to ask for an obviously one-off check with no new objective.\n- Steer a running worker (stop approach X, focus on Y): inspect get_worker_output first, then use steer_work. It applies before the next action without interruption or loss of progress. For an entirely different direction, create a new intent with add_intent.\n- Add a final objective: use set_goals. This automatically resumes completed/paused tasks; the planner subsequently evaluates completion. No manual resume is needed.\n- Add/change testing constraints (only this port, no brute force, passive reconnaissance only): use set_constraints with type=allow or type=deny. Constraints are injected into planner/worker prompts on the next round; operators can also edit them in constraint management.\n3. Reply concisely in plain language and state what you did.\n\nCurrent task objective: {{.Goal}}\nNever invent findings. Answer only from actual tool results."
 
 func mainAgentSystem(goal, dataDir, workDir string, langs ...locale.Lang) string {
+	return mainAgentSystemFor(goal, dataDir, workDir, ProfilePentest, langs...)
+}
+
+// mainAgentSystemFor is mainAgentSystem with an explicit profile; the opsec tail
+// follows the artifact rules, before the output-language instruction.
+func mainAgentSystemFor(goal, dataDir, workDir, profile string, langs ...locale.Lang) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()}, langs...)
-	return body + artifactSpec(workDir, langs...)
+	return body + artifactSpec(workDir, langs...) + opsecBlock(profile, langs...)
 }
 
 // Chat handles one human message and returns the assistant reply. emit, if
@@ -122,7 +136,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// Create this task's working directory: <workDir>/tasks/<taskID>.
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir, locale.FromContext(ctx)), def)
+	system, boundary := deferredSystem(mainAgentSystemFor(goal, m.workDir, mainDir, m.profile(), locale.FromContext(ctx)), def)
 	opts := agentcore.Options{
 		Provider:        m.prov,
 		SystemPrompt:    append(system, outputLanguageInstruction(locale.FromContext(ctx))),
@@ -144,8 +158,8 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		DeepSeekSearchAPIKey:  m.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   m.webSearch.DeepSeekModel,
 		WebSearchProxy:        m.webSearch.Proxy,
-		BashEnv:               proxyEnv(m.proxyAddr, m.proxyCACert), // Bash subprocesses inherit the proxy and trusted CA.
-		WorkingDir:            mainDir,                              // Task working directory: <workDir>/tasks/<taskID>.
+		BashEnv:               append(proxyEnv(m.proxyAddr, m.proxyCACert), quietPathEnv(m.profile())...), // Bash inherits the proxy, CA and op shims.
+		WorkingDir:            mainDir,                                                                    // Task working directory: <workDir>/tasks/<taskID>.
 		ToolOutputDir:         cmdOutDir(mainDir),
 		MaxTurns:              m.maxTurns,                             // 0 = unlimited (configurable in agent management)
 		Compaction:            compactionConfig(m.compactionWindow()), // long chats stay within the window

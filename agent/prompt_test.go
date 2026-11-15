@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/locale"
 )
 
 func TestRenderSystemOverrideAndFallback(t *testing.T) {
@@ -78,5 +80,35 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 	if strings.Contains(noProxy, "traffic_search") {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
+	}
+}
+
+// TestOpsecTailOrdering: the stealth tail is absent for pentest and follows the
+// code-owned artifact block for op, so an operator body edit cannot displace or
+// suppress it. The output-language instruction is appended by every caller after
+// the system body, hence last.
+func TestOpsecTailOrdering(t *testing.T) {
+	previous := PromptOverride
+	PromptOverride = nil
+	t.Cleanup(func() { PromptOverride = previous })
+
+	pentest := workerSystem("", "", "/data", "/data")
+	if strings.Contains(pentest, "Stealth operation") {
+		t.Fatalf("pentest worker got an opsec tail: %q", pentest)
+	}
+
+	op := workerSystem("", "", "/data", "/data") + opsecBlock(ProfileOp, locale.En) + outputLanguageInstruction(locale.En)
+	artifact := strings.Index(op, "Intermediate artifact rules")
+	tail := strings.Index(op, "Stealth operation")
+	language := strings.Index(op, "Write user-facing explanations")
+	if artifact < 0 || tail < 0 || language < 0 || !(artifact < tail && tail < language) {
+		t.Fatalf("worker opsec tail out of order: artifact=%d tail=%d language=%d", artifact, tail, language)
+	}
+
+	if got := mainAgentSystemFor("goal", "/data", "/data", ProfileOp, locale.En); strings.Index(got, "Intermediate artifact rules") > strings.Index(got, "Stealth operation") {
+		t.Fatal("main-agent opsec tail precedes the artifact spec")
+	}
+	if got := chatSystemFor("pentest", "/data", "/work", ProfileOp, locale.En); strings.Index(got, "File output rules") > strings.Index(got, "Stealth operation") {
+		t.Fatal("chat opsec tail precedes the file output rules")
 	}
 }

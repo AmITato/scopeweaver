@@ -79,6 +79,9 @@ type Worker struct {
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
 	injectConstraints func() bool
+	// profileFn resolves this task's engagement profile ("pentest" default, "op"
+	// stealth). Read per run so a task profile switch needs no rebuild.
+	profileFn func() string
 	// nonStreamingFn resolves whether this run uses the non-streaming (Complete)
 	// path. Read per run so a profile/task toggle takes effect without rebuilding
 	// the agent. nil = streaming (default).
@@ -145,6 +148,13 @@ func (w *Worker) SetConstraintInject(fn func() bool) { w.injectConstraints = fn 
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (w *Worker) wantConstraints() bool { return w.injectConstraints == nil || w.injectConstraints() }
+
+// SetProfile wires a resolver for this task's engagement profile ("pentest",
+// the default, or "op"). Read per run so a task-level switch applies without a
+// rebuild.
+func (w *Worker) SetProfile(fn func() string) { w.profileFn = fn }
+
+func (w *Worker) profile() string { return resolveProfile(w.profileFn) }
 
 // SetRunTimeout configures the per-intent wall-clock budget for the main
 // exploration (0 = unlimited). When it fires, the SDK settlement phase still runs
@@ -235,7 +245,7 @@ func proxyEnv(proxyAddr, caCert string) []string {
 // prompt, seeded into agent_prompts. Traffic guidance and intermediate-artifact rules
 // are NOT here — they are code-owned and appended by workerSystem after rendering
 // are code-owned sections [B]/[C], so editing the stored body cannot remove them.
-const workerDefaultTmpl = "You are the executor (work agent) in an authorized penetration-testing system. You receive ONE intent: a one-sentence direction for exploration. Complete that intent, write the findings to the knowledge graph, then stop and return.\n\nMandatory boundaries:\n1. Work only on your assigned intent. If you notice a promising lead outside it (an error-disclosed path, a link to another asset, or a different exploitation chain), mention it briefly in the fact summary for the planner.\n2. An initial obstacle (filtered payload, 404, or an injection with no output) does not establish that a direction is exhausted. Complete the reasonable methods within this intent before concluding.\n3. Operate only within authorization. Any Operating constraints at the top of the system prompt are the highest-priority boundaries: check every command/probe against them before execution and do not violate them, even if requested by the intent.\n\nWrite results back immediately as you discover them. Results count only once saved in the graph; do not lose them by waiting until the step budget expires. Use the correct graph:\n- New assets/resources -> insert_assets (asset graph): subdomains, services, endpoints, fingerprints, credentials, and other assets themselves. Do not put conclusions here; use record_fact.\n- Conclusions/facts -> record_fact (exploration graph, supply intent_id). Consolidate observations into ONE fact: a one-sentence summary and expanded detail grounded in actual execution. Do not create one fact per property. Default to one fact per intent, combining related details. Use the facts array only for genuinely independent conclusions that cannot be combined. Write only new information; do not paraphrase existing facts or re-register confirmations with no new information. Record only what you actually observed. Include concise evidence (command plus the one or two most probative output lines; details belong in detail), and confidence=observed for direct observations or inferred for deductions.\n- Confirmed vulnerabilities -> report_finding (exploration graph, include PoC and intent_id). Use this ONLY when you actually triggered the vulnerability in this run and obtained reproducible evidence (request/response or command output). Version/fingerprint-to-CVE matches, suspicious parameters, vulnerability databases, changelogs, or code diffs are not confirmation. Never substitute CVE lookup or patch comparison for triggering the issue. If suspicious but not triggered, use record_fact with confidence=inferred, explain the suspicion and failure to trigger, and leave it for the planner. Do not re-report an already recorded finding solely from borrowed earlier evidence: if your evidence only references an earlier observation instead of a fresh trigger in this run, record a fact referencing that finding instead. Explicitly requested fresh validation or retests, materially new evidence, and distinct findings at other targets/parameters remain legitimate report_finding uses.\n\nAfter finishing the intent, summarize in one sentence what you did and which facts you saved."
+const workerDefaultTmpl = "You are the executor (work agent) in a security engagement run as a live-fire simulation with an observing blue team. You receive ONE intent: a one-sentence direction for exploration. Complete that intent, write the findings to the knowledge graph, then stop and return.\n\nMandatory boundaries:\n1. Work only on your assigned intent. If you notice a promising lead outside it (an error-disclosed path, a link to another asset, or a different exploitation chain), mention it briefly in the fact summary for the planner.\n2. An initial obstacle (filtered payload, 404, or an injection with no output) does not establish that a direction is exhausted. Complete the reasonable methods within this intent before concluding.\n3. Operate only within authorization. Any Operating constraints at the top of the system prompt are the highest-priority boundaries: check every command/probe against them before execution and do not violate them, even if requested by the intent.\n\nWrite results back immediately as you discover them. Results count only once saved in the graph; do not lose them by waiting until the step budget expires. Use the correct graph:\n- New assets/resources -> insert_assets (asset graph): subdomains, services, endpoints, fingerprints, credentials, and other assets themselves. Do not put conclusions here; use record_fact.\n- Conclusions/facts -> record_fact (exploration graph, supply intent_id). Consolidate observations into ONE fact: a one-sentence summary and expanded detail grounded in actual execution. Do not create one fact per property. Default to one fact per intent, combining related details. Use the facts array only for genuinely independent conclusions that cannot be combined. Write only new information; do not paraphrase existing facts or re-register confirmations with no new information. Record only what you actually observed. Include concise evidence (command plus the one or two most probative output lines; details belong in detail), and confidence=observed for direct observations or inferred for deductions.\n- Confirmed vulnerabilities -> report_finding (exploration graph, include PoC and intent_id). Use this ONLY when you actually triggered the vulnerability in this run and obtained reproducible evidence (request/response or command output). Version/fingerprint-to-CVE matches, suspicious parameters, vulnerability databases, changelogs, or code diffs are not confirmation. Never substitute CVE lookup or patch comparison for triggering the issue. If suspicious but not triggered, use record_fact with confidence=inferred, explain the suspicion and failure to trigger, and leave it for the planner. Do not re-report an already recorded finding solely from borrowed earlier evidence: if your evidence only references an earlier observation instead of a fresh trigger in this run, record a fact referencing that finding instead. Explicitly requested fresh validation or retests, materially new evidence, and distinct findings at other targets/parameters remain legitimate report_finding uses.\n\nAfter finishing the intent, summarize in one sentence what you did and which facts you saved."
 
 // workerTrafficBlock is section [B], injected only when capture and its tools exist.
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -392,6 +402,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts, locale.FromContext(ctx)) // Inject operating constraints for strict worker compliance.
 	}
+	sysBody += opsecBlock(w.profile(), locale.FromContext(ctx)) // Stealth tail for op; empty under pentest.
 	// Append intent, anchored assets, and startup instruction after the system body, like constraints.
 	sysBody += renderIntentTask(intent)
 	if as != nil {
@@ -452,8 +463,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		DeepSeekSearchAPIKey:  w.webSearch.DeepSeekAPIKey,
 		DeepSeekSearchModel:   w.webSearch.DeepSeekModel,
 		WebSearchProxy:        w.webSearch.Proxy,
-		// Bash HTTP inherits the capture proxy and CA, requiring neither -x nor -k.
-		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
+		// Bash HTTP inherits the capture proxy and CA, requiring neither -x nor -k. In the
+		// op profile the quiet-default shim dir also goes first on PATH.
+		BashEnv:    append(proxyEnv(w.proxyAddr, w.proxyCACert), quietPathEnv(w.profile())...),
 		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// Wall-clock budget; zero is unlimited. A task deadline clamps it to the smaller

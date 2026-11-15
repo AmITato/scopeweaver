@@ -36,7 +36,7 @@ func TestEditedPromptIsNotTranslated(t *testing.T) {
 }
 
 func TestBuiltinPromptTranslationCoverage(t *testing.T) {
-	for _, p := range []string{goalsDefaultTmpl, goalsScopeTail, plannerDefaultTmpl, workerDefaultTmpl, mainAgentDefaultTmpl, autoDefaultTmpl, pentestDefaultTmpl, DefaultAssistantPrompt, ReporterDefaultPrompt, RetesterDefaultPrompt} {
+	for _, p := range []string{goalsDefaultTmpl, goalsScopeTail, opsecBlockText, plannerDefaultTmpl, workerDefaultTmpl, mainAgentDefaultTmpl, autoDefaultTmpl, pentestDefaultTmpl, DefaultAssistantPrompt, ReporterDefaultPrompt, RetesterDefaultPrompt} {
 		ko, ok := locale.Lookup(locale.Ko, p)
 		if !ok || ko == p || strings.TrimSpace(ko) == "" {
 			t.Fatalf("missing Korean prompt: %.60s", p)
@@ -76,8 +76,8 @@ func TestBuiltinToolMetadataLanguagePreservesEdits(t *testing.T) {
 }
 
 func TestAllShippedBuiltinPromptTranslations(t *testing.T) {
-	templates := []string{goalsDefaultTmpl, goalsScopeTail, plannerDefaultTmpl, workerDefaultTmpl, mainAgentDefaultTmpl, autoDefaultTmpl, pentestDefaultTmpl, DefaultAssistantPrompt, ReporterDefaultPrompt, RetesterDefaultPrompt, settleWrapUpPrompt, plannerWrapUpDefault, mainAgentWrapUpDefault, genericWrapUpDefault, workerTaskTimeoutDefault, plannerTaskTimeoutDefault}
-	if len(templates) != 16 {
+	templates := []string{goalsDefaultTmpl, goalsScopeTail, opsecBlockText, plannerDefaultTmpl, workerDefaultTmpl, mainAgentDefaultTmpl, autoDefaultTmpl, pentestDefaultTmpl, DefaultAssistantPrompt, ReporterDefaultPrompt, RetesterDefaultPrompt, settleWrapUpPrompt, plannerWrapUpDefault, mainAgentWrapUpDefault, genericWrapUpDefault, workerTaskTimeoutDefault, plannerTaskTimeoutDefault}
+	if len(templates) != 17 {
 		t.Fatal("external agent template inventory changed")
 	}
 	if err := locale.ValidateTextTranslations(templates); err != nil {

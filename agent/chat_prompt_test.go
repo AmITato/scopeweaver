@@ -84,3 +84,29 @@ func TestRenderSystemReportsInvalidTemplateWithoutLoggingPrompt(t *testing.T) {
 		}
 	}
 }
+
+// TestChatSystemOpsecTail: chatSystem stays byte-identical for pentest, while an
+// op task appends the static stealth tail after the file output rules and before
+// the caller's output-language instruction.
+func TestChatSystemOpsecTail(t *testing.T) {
+	previous := PromptOverride
+	PromptOverride = nil
+	t.Cleanup(func() { PromptOverride = previous })
+
+	for _, role := range []string{"auto", "pentest", "reporter", "retester", "custom"} {
+		for _, lang := range locale.Languages() {
+			pentest := chatSystem(role, "/data", "/work", lang)
+			if strings.Contains(pentest, "Stealth operation") {
+				t.Fatalf("%s/%s pentest chat got an opsec tail", role, lang)
+			}
+			op := chatSystemFor(role, "/data", "/work", ProfileOp, lang)
+			want := pentest + opsecBlock(ProfileOp, lang)
+			if op != want {
+				t.Fatalf("%s/%s op chat tail is not exactly the code-owned block", role, lang)
+			}
+			if strings.Index(op, chatWorkDirSpec("/work", lang)) > strings.Index(op, opsecBlock(ProfileOp, lang)) {
+				t.Fatalf("%s/%s opsec tail precedes the file output rules", role, lang)
+			}
+		}
+	}
+}

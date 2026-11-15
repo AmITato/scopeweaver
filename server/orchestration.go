@@ -503,6 +503,8 @@ func (s *Server) seedOrchestrationTools() {
 	s.reseedMainAgentPrompt() // One-time main-agent prompt guidance to ask about goals when adding intents after completion.
 	s.reseedPlannerPrompt()   // One-time planner prompt revision for justified zero-intent rounds and quantitative acceptance checks.
 	s.reseedWorkerPrompt()    // One-time worker prompt revision adding evidence requirements for negative conclusions.
+	s.reseedAutoPrompt()      // One-time Auto prompt framing rewrite to the simulation model.
+	s.reseedPentestPrompt()   // One-time standalone pentest prompt framing rewrite.
 	if !s.seedReporterAgent() {
 		return // Keep dependent one-time migrations retryable after failed creation.
 	}
@@ -569,13 +571,13 @@ func (s *Server) unbindGoalMetDefault() {
 	_ = s.m.pg.SetSetting(flag, "true")
 }
 
-// reseedGoalsPrompt refreshes the goals decomposer to the current code default, which adds constraint
-// extraction through set_constraints before goal decomposition. First-insert-only SeedPromptIfEmpty
+// reseedGoalsPrompt refreshes the goals decomposer to the current code default, which uses simulation
+// framing and adds constraint extraction through set_constraints before goal decomposition. First-insert-only SeedPromptIfEmpty
 // cannot update existing version 1, so ResetPromptToDefault appends and selects a new version.
 // Old versions remain recoverable in history, including customizations. A settings flag permits one attempt;
 // bump it for future default changes. Fresh databases already receive the latest default during seeding.
 func (s *Server) reseedGoalsPrompt() {
-	const flag = "goals_prompt_constraint_step_v1"
+	const flag = "goals_prompt_simulation_framing_v2"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -596,16 +598,16 @@ func (s *Server) reseedGoalsPrompt() {
 		log.Printf(locale.Text(locale.ServerDefault(), "[prompts] Could not refresh the goals default: %v"), err)
 		return
 	}
-	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added goals default version with constraint extraction (one-time)"))
+	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added goals default with simulation framing and constraint extraction (one-time)"))
 }
 
-// reseedMainAgentPrompt refreshes the main-agent code default, adding guidance to ask whether
-// manually submitted intents after goal completion should become formal goals. First-insert-only
+// reseedMainAgentPrompt refreshes the main-agent code default, adding simulation framing and guidance
+// to ask whether manually submitted intents after goal completion should become formal goals. First-insert-only
 // SeedPromptIfEmpty cannot update existing versions; ResetPromptToDefault appends and selects a new one.
 // Previous customizations remain recoverable in history. A settings flag allows one attempt; fresh databases
 // already receive the latest default. This follows the same structure as reseedGoalsPrompt.
 func (s *Server) reseedMainAgentPrompt() {
-	const flag = "mainagent_prompt_goalless_intent_v1"
+	const flag = "mainagent_prompt_simulation_framing_v2"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -626,17 +628,17 @@ func (s *Server) reseedMainAgentPrompt() {
 		log.Printf(locale.Text(locale.ServerDefault(), "[prompts] Could not refresh the mainagent default: %v"), err)
 		return
 	}
-	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added mainagent default version with confirmation before new post-completion goals (one-time)"))
+	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added mainagent default with simulation framing and confirmation before new post-completion goals (one-time)"))
 }
 
-// reseedPlannerPrompt refreshes the simplified planner default: restraint means deduplication only,
+// reseedPlannerPrompt refreshes the simplified planner default with simulation framing: restraint means deduplication only,
 // depth takes priority over coverage, unmet goals with no active intents require output, and negative reviews are bounded.
 // Bump the flag (currently v2) for substantive changes. First-insert-only seeding cannot update existing versions,
 // so ResetPromptToDefault appends and selects a new version while preserving older customizations
 // in history. A settings flag permits one attempt; fresh databases already have the latest default.
 // This follows the same structure as reseedGoalsPrompt.
 func (s *Server) reseedPlannerPrompt() {
-	const flag = "planner_prompt_compact_realistic_v2"
+	const flag = "planner_prompt_simulation_framing_v3"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -657,16 +659,16 @@ func (s *Server) reseedPlannerPrompt() {
 		log.Printf(locale.Text(locale.ServerDefault(), "[prompts] Could not refresh the planner default: %v"), err)
 		return
 	}
-	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added planner default with deduplication, depth priority, and bounded negative rechecks (one-time)"))
+	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added planner default with simulation framing, deduplication, depth priority, and bounded negative rechecks (one-time)"))
 }
 
-// reseedWorkerPrompt refreshes record_fact guidance: remove the negative-conclusion observation/tentative-reading
+// reseedWorkerPrompt refreshes the simulation framing and record_fact guidance: remove the negative-conclusion observation/tentative-reading
 // instruction and decouple observed/inferred confidence from exhausting an intent's methods, avoiding planner confusion.
 // Separate facts-array entries are limited to truly independent, unmergeable cases. Flag v3 updates existing databases.
 // First-insert-only seeding cannot update existing versions, so append/select a version while keeping history recoverable.
 // A settings flag permits one attempt; fresh databases need no migration. Same structure as reseedGoalsPrompt.
 func (s *Server) reseedWorkerPrompt() {
-	const flag = "worker_prompt_compact_v4"
+	const flag = "worker_prompt_simulation_framing_v5"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -687,7 +689,45 @@ func (s *Server) reseedWorkerPrompt() {
 		log.Printf(locale.Text(locale.ServerDefault(), "[prompts] Could not refresh the worker default: %v"), err)
 		return
 	}
-	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added worker default with focused list_assets/list_findings context guidance (one-time)"))
+	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added worker default with simulation framing and focused list_assets/list_findings context guidance (one-time)"))
+}
+
+// reseedChatPrompt refreshes one chat-seeded built-in agent (auto/pentest) to its current
+// code default after a section [A] framing rewrite. First-insert-only seeding cannot update
+// existing versions, so append/select a version and keep prior customizations in history.
+// A settings flag permits one attempt; fresh databases already receive the latest default.
+func (s *Server) reseedChatPrompt(agentKey, flag, label string) {
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // Attempt once regardless of success.
+	a, err := s.m.pg.GetAgentByKey(agentKey)
+	if err != nil || a == nil {
+		return // No agent row yet: fresh-database seedPrompts will install the latest default.
+	}
+	tmpl := agent.BuiltinPromptSeeds()[agentKey]
+	if tmpl == "" {
+		return
+	}
+	// Fresh seedPrompts already installed the current default; avoid appending a duplicate version.
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+		return
+	}
+	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
+		log.Printf("%s", locale.Text(locale.ServerDefault(), "[prompts] Could not refresh the "+agentKey+" default: %v", err))
+		return
+	}
+	log.Print(locale.Text(locale.ServerDefault(), "[prompts] Added "+agentKey+" default with simulation framing (one-time): "+label))
+}
+
+// reseedAutoPrompt refreshes the Auto platform-operator default after the framing rewrite.
+func (s *Server) reseedAutoPrompt() {
+	s.reseedChatPrompt("auto", "auto_prompt_simulation_framing_v1", "operating assistant")
+}
+
+// reseedPentestPrompt refreshes the standalone pentest agent default after the framing rewrite.
+func (s *Server) reseedPentestPrompt() {
+	s.reseedChatPrompt("pentest", "pentest_prompt_simulation_framing_v1", "standalone agent")
 }
 
 // reporterToolCallMessage must always require get_finding_traffic before writing the report.

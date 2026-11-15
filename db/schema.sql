@@ -703,6 +703,19 @@ CREATE TABLE IF NOT EXISTS task_residue (
 CREATE INDEX IF NOT EXISTS idx_task_residue_open ON task_residue(task_id, rank, id)
     WHERE removed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_task_residue_task ON task_residue(task_id, id DESC);
+
+-- Per-host work leases so N workers do not converge on one host. host is a lease
+-- key: the bare host for concurrency 1, or host#N for a host with N slots. A TTL
+-- keeps a crashed worker from locking a host forever. See docs/opsec-blend.md §7.4.
+CREATE TABLE IF NOT EXISTS task_host_leases (
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    host       TEXT NOT NULL,
+    owner      TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (task_id, host)
+);
+CREATE INDEX IF NOT EXISTS idx_task_host_leases_expiry ON task_host_leases(expires_at);
+
 -- findings is created later in this file, so the evidence link is added there.
 
 -- Keep provenance rows synchronized when existing asset upsert paths append or

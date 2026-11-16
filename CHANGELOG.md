@@ -4,6 +4,11 @@ This is the translated upstream ARTEX history from baseline `160fe13`, preservin
 
 ## [Unreleased]
 
+### Zod advisory fully remediated in the OpenCode SDK bridge (#67)
+
+#### Security
+- The OpenCode SDK bridge now overrides `zod` to 4.6.7 for its whole dependency tree, so `bun audit` no longer reports GHSA-mrhx-c7xc-m3w5. This covers the `legacy` runtime's `@opencode-ai/plugin` 1.19.4 (which pinned 4.1.8) and `gitlab-ai-provider` 6.24.0 (which declares `zod ^3.25.76`). `gitlab-ai-provider` uses only `z.object`, `z.string`, `z.number`, `z.record` and `z.infer`, which zod 4.6.7 supports, including the v3-style one-argument `z.record`. Its declared zod 3 contract is overridden: with zod 4.6.7 it loads, validates its OAuth token schema and builds a model, but no GitLab Duo request has been tested.
+
 ### OpenCode SDK bridge runtime 2.3.0 (#67)
 
 #### Security

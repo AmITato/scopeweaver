@@ -280,6 +280,14 @@ type Manager struct {
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
 	globalProxy string
+
+	// egressRotMu guards the coordinated rotation state. The tunnel is box-wide,
+	// so Rotating() tells the auto-rotator and the HTTP status surface that a
+	// rotation owns the exit, and LastRotation() is the audit trail.
+	egressRotMu      sync.Mutex
+	egressRotating   bool
+	egressLastRot    EgressRotation
+	egressLastRotSet bool
 }
 
 // Settings keys the UI toggles at runtime.
@@ -303,6 +311,11 @@ const (
 	settingEgressDriver = "egress_driver"
 	settingEgressRPS    = "egress_rps"
 	settingEgressBurst  = "egress_burst"
+	// Automatic rotation on burn: when enabled, the egress monitor rotates the exit
+	// after any target host accumulates settingEgressBurnThreshold HTTP 429s since
+	// the last rotation. Default off; threshold default 50.
+	settingEgressAutoRotate    = "egress_auto_rotate"
+	settingEgressBurnThreshold = "egress_burn_threshold"
 	// LLM failover is disabled by default. When enabled, agents using the globally active profile
 	// switch to the next profile on insufficient balance, invalid keys, rate limits, or service failures.
 	// settingLLMPoolBindFallback matters only with failover enabled. By default, an explicit agent/task
@@ -333,6 +346,9 @@ const (
 	defaultConcurrencyLimit = 5
 	// defaultEgressBurst is the token-bucket capacity when egress_burst is unset.
 	defaultEgressBurst = 5
+	// defaultEgressBurnThreshold is the 429 count that triggers auto-rotation when
+	// egress_burn_threshold is unset (or stored invalid).
+	defaultEgressBurnThreshold = 50
 )
 
 // ConcurrencyLimit returns whether the simultaneous-running-task cap is enabled and
@@ -425,6 +441,54 @@ func (m *Manager) SetEgressBudget(rps float64, burst int) error {
 	// the browser MCP get the proxy at all — re-sync it like the capture toggle.
 	m.syncBrowserMCPProxy()
 	return nil
+}
+
+// EgressAutoRotate reports whether burn-driven automatic rotation is enabled
+// (off by default).
+func (m *Manager) EgressAutoRotate() bool {
+	if m.pg == nil {
+		return false
+	}
+	return m.pg.GetBool(settingEgressAutoRotate, false)
+}
+
+// EgressBurnThreshold returns the per-host 429 count that triggers auto-rotation.
+// Invalid or unset values fall back to the default (50).
+func (m *Manager) EgressBurnThreshold() int {
+	if m.pg == nil {
+		return defaultEgressBurnThreshold
+	}
+	v, ok, err := m.pg.GetSetting(settingEgressBurnThreshold)
+	if err != nil || !ok {
+		return defaultEgressBurnThreshold
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return defaultEgressBurnThreshold
+	}
+	return n
+}
+
+// SetEgressAutoRotate persists the burn-driven rotation switch. The monitor reads
+// it on every tick, so the change takes effect without rebuilding agents.
+func (m *Manager) SetEgressAutoRotate(on bool) error {
+	if m.pg == nil {
+		return locale.NewError("no database configured")
+	}
+	return m.pg.SetBool(settingEgressAutoRotate, on)
+}
+
+// SetEgressBurnThreshold persists the per-host 429 trigger count. It must be
+// positive; 0 disables nothing and is rejected rather than silently rotating on
+// the first 429.
+func (m *Manager) SetEgressBurnThreshold(n int) error {
+	if n <= 0 {
+		return locale.Errorf("egress_burn_threshold must be greater than zero")
+	}
+	if m.pg == nil {
+		return locale.NewError("no database configured")
+	}
+	return m.pg.SetSetting(settingEgressBurnThreshold, strconv.Itoa(n))
 }
 
 // LLMMaxConcurrent returns the per-profile cap on simultaneous in-flight LLM
@@ -2086,14 +2150,69 @@ func (m *Manager) EgressStatus(ctx context.Context) (egress.Status, error) {
 	return p.Status(ctx)
 }
 
+// EgressRotation is the audit trail of one successful exit change. Old/New are
+// the provider statuses captured immediately before and after the switch, so the
+// activity trace can show which relay and IP the whole box moved from and to.
+type EgressRotation struct {
+	At     time.Time     `json:"at"`
+	Reason string        `json:"reason"`
+	Old    egress.Status `json:"old"`
+	New    egress.Status `json:"new"`
+}
+
+// Rotating reports whether a provider rotation currently owns the exit.
+func (m *Manager) Rotating() bool {
+	m.egressRotMu.Lock()
+	defer m.egressRotMu.Unlock()
+	return m.egressRotating
+}
+
+// LastRotation returns the most recent successful rotation and whether one has
+// happened in this process.
+func (m *Manager) LastRotation() (EgressRotation, bool) {
+	m.egressRotMu.Lock()
+	defer m.egressRotMu.Unlock()
+	return m.egressLastRot, m.egressLastRotSet
+}
+
 // RotateEgress changes the exit between waves. Callers must first drain in-flight
-// target traffic; the model stream shares this tunnel.
+// target traffic; the model stream shares this tunnel. The reason is recorded for
+// the operator surface.
 func (m *Manager) RotateEgress(ctx context.Context, location string) (egress.Status, error) {
+	return m.rotateEgress(ctx, location, "operator")
+}
+
+// rotateEgress is the reason-aware implementation used by the HTTP route and the
+// burn monitor. It serializes provider calls and records Old/New only on success,
+// so a failed attempt never becomes the "last rotation" the cooldown trusts.
+func (m *Manager) rotateEgress(ctx context.Context, location, reason string) (egress.Status, error) {
 	p := m.Egress()
 	if p == nil {
 		return egress.Status{Driver: "none"}, locale.NewError("no egress driver is configured")
 	}
-	return p.Rotate(ctx, location)
+	m.egressRotMu.Lock()
+	if m.egressRotating {
+		m.egressRotMu.Unlock()
+		return egress.Status{Driver: m.EgressDriver()}, locale.NewError("egress rotation already in progress")
+	}
+	m.egressRotating = true
+	m.egressRotMu.Unlock()
+	defer func() {
+		m.egressRotMu.Lock()
+		m.egressRotating = false
+		m.egressRotMu.Unlock()
+	}()
+
+	before, _ := p.Status(ctx)
+	after, err := p.Rotate(ctx, location)
+	if err != nil {
+		return after, err
+	}
+	m.egressRotMu.Lock()
+	m.egressLastRot = EgressRotation{At: time.Now(), Reason: reason, Old: before, New: after}
+	m.egressLastRotSet = true
+	m.egressRotMu.Unlock()
+	return after, nil
 }
 
 // SetEgressDriver selects the driver and persists the choice ("none" disables).
@@ -2123,4 +2242,61 @@ func (m *Manager) EgressDriver() string {
 		return "none"
 	}
 	return "mullvad"
+}
+
+const (
+	// egressAutoRotateInterval is how often the burn monitor samples the per-host
+	// budget counters.
+	egressAutoRotateInterval = 30 * time.Second
+	// egressAutoRotateCooldown stops a sustained burn from rotating in a loop.
+	// The relay needs time to settle before its 429s can be judged fresh.
+	egressAutoRotateCooldown = 15 * time.Minute
+)
+
+// startEgressAutoRotate launches the burn monitor under the manager's scheduler
+// lifecycle, so Close cancels it before the DB pool is released. Registered after
+// startScheduler; ordering is irrelevant because both share the same cancel list.
+func (m *Manager) startEgressAutoRotate(s *Server) {
+	if m == nil || s == nil || m.pg == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	m.schedulerMu.Lock()
+	if m.schedulerDone != nil {
+		m.schedulerMu.Unlock()
+		cancel()
+		return
+	}
+	m.schedulerCancels = append(m.schedulerCancels, cancel)
+	m.schedulerWG.Add(1)
+	s.backgroundWG.Add(1)
+	m.schedulerMu.Unlock()
+	go func() {
+		defer m.schedulerWG.Done()
+		defer s.backgroundWG.Done()
+		defer cancel()
+		m.runEgressAutoRotate(ctx, s)
+	}()
+}
+
+// runEgressAutoRotate samples the budget every 30s. Rotation only happens when the
+// setting is on, a driver is configured, a host crossed the threshold since the
+// last rotation, and the cooldown has expired (all decided in maybeAutoRotate).
+func (m *Manager) runEgressAutoRotate(ctx context.Context, s *Server) {
+	ticker := time.NewTicker(egressAutoRotateInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			var snap map[string]traffic.HostBudget
+			if m.traffic != nil {
+				snap = m.traffic.BudgetSnapshot()
+			}
+			if _, err := s.maybeAutoRotate(ctx, snap, now); err != nil {
+				log.Printf(locale.Text(locale.ServerDefault(), "[egress] automatic rotation failed: %v"), err)
+			}
+		}
+	}
 }

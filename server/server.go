@@ -24,6 +24,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/chatstate"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/locale"
@@ -132,6 +133,13 @@ type Server struct {
 	// Startup and periodic DB users must finish before the manager closes stores.
 	backgroundWG sync.WaitGroup
 	side         *sideQuestionState
+
+	// egressMu serializes the burn baseline and holds the test seam for the drain
+	// budget. The rotation barrier itself lives on the Engine (atomic) so claimNext
+	// and the planner read it without taking a server lock.
+	egressMu         sync.Mutex
+	egressRotateWait time.Duration    // WaitIdle budget before a rotation; 0 = 90s
+	egressBurnBase   map[string]int64 // per-host S429 total at the last rotation
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -288,6 +296,7 @@ func newServer(ctx context.Context, m *Manager, skillDir string, dataDir string,
 	s.wireInterceptReviewer() // LLM fallback approval judges commands that match no interception rule.
 	if m.pg != nil {
 		m.startScheduler(s) // Register ownership before launch, after recovery and task restoration.
+		m.startEgressAutoRotate(s)
 	}
 	return s, nil
 }
@@ -859,6 +868,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
+	// Coordinated egress identity: status and operator-driven rotation. Rotation
+	// drains in-flight target work and the model stream first (docs/opsec-blend.md §8).
+	mux.HandleFunc("GET /api/egress", s.getEgress)
+	mux.HandleFunc("POST /api/egress/rotate", s.rotateEgressRoute)
 	// Finding notification channels are independent resources with multiple instances and individual filters,
 	// so they use dedicated REST endpoints rather than flat /api/settings keys.
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
@@ -3431,6 +3444,250 @@ func (s *Server) getTrafficBlob(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// defaultEgressRotateWait bounds how long a rotation waits for in-flight target
+// work and model calls to drain. A wave that cannot drain in 90s is abandoned:
+// rotating under load is exactly what cuts a mid-chain request.
+const defaultEgressRotateWait = 90 * time.Second
+
+// RotateEgress coordinates one exit change: install the engine barrier, wait for
+// running work and LLM calls to drain, rotate the provider, then clear the barrier
+// and tell every running task what the exit was before and after. It never rotates
+// under load — a drain timeout aborts the whole operation.
+func (s *Server) RotateEgress(ctx context.Context, location string) (egress.Status, error) {
+	return s.rotateEgress(ctx, location, "operator")
+}
+
+func (s *Server) rotateEgress(ctx context.Context, location, reason string) (egress.Status, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s.m == nil || s.m.Egress() == nil {
+		return egress.Status{Driver: "none"}, locale.NewError("no egress driver is configured")
+	}
+	if s.engine == nil {
+		return egress.Status{Driver: s.m.EgressDriver()}, locale.NewError("engine is not running")
+	}
+	if !s.engine.beginRotation() {
+		return egress.Status{Driver: s.m.EgressDriver()}, locale.NewError("egress rotation already in progress")
+	}
+	// Clear even when the drain or the provider fails; a stuck barrier would stop
+	// all claims and planning.
+	defer s.engine.SetRotating(false)
+
+	wait := s.egressRotateWait
+	if wait <= 0 {
+		wait = defaultEgressRotateWait
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	err := s.engine.WaitIdle(waitCtx)
+	cancel()
+	if err != nil {
+		log.Printf(locale.Text(locale.ServerDefault(), "[egress] rotation aborted: in-flight target work or model call did not drain within %s: %v"), wait, err)
+		return egress.Status{Driver: s.m.EgressDriver()}, fmt.Errorf("egress rotation aborted: in-flight work did not drain within %s: %w", wait, err)
+	}
+
+	st, err := s.m.rotateEgress(ctx, location, reason)
+	if err != nil {
+		return st, err
+	}
+	// The next burn window starts here: only 429s after this rotation count.
+	s.noteEgressBurnBaseline()
+	if rot, ok := s.m.LastRotation(); ok {
+		s.emitEgressRotation(rot)
+	}
+	return st, nil
+}
+
+// runningTasks returns the live tasks a rotation should report to. A queued or
+// paused task has no traffic to protect, and a terminal one has no transcript to
+// annotate.
+func (s *Server) runningTasks() []*Task {
+	if s.m == nil {
+		return nil
+	}
+	var out []*Task
+	for _, t := range s.m.List() {
+		state := t.lifecycleSnapshot()
+		if state.Status != "running" || state.Paused || state.Queued {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// emitEgressRotation writes one system activity per running task so the operator
+// sees a wave boundary in every transcript, not only the active one.
+func (s *Server) emitEgressRotation(rot EgressRotation) {
+	if s.engine == nil {
+		return
+	}
+	summary := func(lang locale.Lang) string {
+		return fmt.Sprintf(locale.Text(lang, "Egress rotated (%s): %s -> %s"),
+			rot.Reason, egressExitLabel(rot.Old), egressExitLabel(rot.New))
+	}
+	for _, t := range s.runningTasks() {
+		if t.Store == nil {
+			continue
+		}
+		lang := taskLanguage(s.m.pg, t.ID)
+		s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: summary(lang)})
+	}
+}
+
+// egressExitLabel renders an exit for a human-readable activity: IP (city,
+// country), falling back to the relay hostname when no IP is known.
+func egressExitLabel(st egress.Status) string {
+	exit := st.ExitIP
+	if exit == "" {
+		exit = st.Hostname
+	}
+	loc := strings.Trim(strings.Join([]string{st.City, st.Country}, ", "), ", ")
+	switch {
+	case exit != "" && loc != "":
+		return exit + " (" + loc + ")"
+	case exit != "":
+		return exit
+	case loc != "":
+		return loc
+	default:
+		return "unknown"
+	}
+}
+
+// maybeAutoRotate samples one budget snapshot and rotates when a host crossed the
+// burn threshold. snap is passed in so tests can drive the decision without a live
+// proxy. Returns true when a rotation ran.
+func (s *Server) maybeAutoRotate(ctx context.Context, snap map[string]traffic.HostBudget, now time.Time) (bool, error) {
+	host, delta, ok := s.egressBurnHost(snap, now)
+	if !ok {
+		return false, nil
+	}
+	threshold := s.m.EgressBurnThreshold()
+	reason := fmt.Sprintf("burn threshold: %s reached %d HTTP 429s", host, delta)
+	if _, err := s.rotateEgress(ctx, "", reason); err != nil {
+		return false, err
+	}
+	rot, _ := s.m.LastRotation()
+	log.Printf(locale.Text(locale.ServerDefault(), "[egress] auto-rotate: %s accumulated %d HTTP 429s (threshold %d); exit %s -> %s"),
+		host, delta, threshold, egressExitLabel(rot.Old), egressExitLabel(rot.New))
+	return true, nil
+}
+
+// egressBurnHost reports the first host whose 429 count since the last rotation
+// crossed the configured threshold, or false when rotation is disabled, has no
+// driver, is cooling down, or no host qualifies.
+func (s *Server) egressBurnHost(snap map[string]traffic.HostBudget, now time.Time) (string, int, bool) {
+	if s == nil || s.m == nil || s.m.Egress() == nil || !s.m.EgressAutoRotate() {
+		return "", 0, false
+	}
+	if rot, ok := s.m.LastRotation(); ok && now.Sub(rot.At) < egressAutoRotateCooldown {
+		return "", 0, false
+	}
+	threshold := int64(s.m.EgressBurnThreshold())
+	if threshold <= 0 {
+		return "", 0, false
+	}
+	s.egressMu.Lock()
+	base := make(map[string]int64, len(s.egressBurnBase))
+	for host, n := range s.egressBurnBase {
+		base[host] = n
+	}
+	s.egressMu.Unlock()
+	for host, hb := range snap {
+		if host == "" {
+			continue
+		}
+		if delta := hb.S429 - base[host]; delta >= threshold {
+			return host, int(delta), true
+		}
+	}
+	return "", 0, false
+}
+
+func (s *Server) setEgressBurnBaseline(base map[string]int64) {
+	s.egressMu.Lock()
+	s.egressBurnBase = base
+	s.egressMu.Unlock()
+}
+
+// noteEgressBurnBaseline records the current per-host 429 totals as the start of
+// the next burn window. Rotation does not clear the proxy counters, so a snapshot
+// is the only way to make "since the last rotation" measurable.
+func (s *Server) noteEgressBurnBaseline() {
+	if s.m == nil || s.m.traffic == nil {
+		s.setEgressBurnBaseline(nil)
+		return
+	}
+	snap := s.m.traffic.BudgetSnapshot()
+	base := make(map[string]int64, len(snap))
+	for host, hb := range snap {
+		base[host] = hb.S429
+	}
+	s.setEgressBurnBaseline(base)
+}
+
+// egressStatusResponse flattens the identity status and adds rotation state, so a
+// client can read `driver`/`exit_ip` directly and still see the wave boundary.
+type egressStatusResponse struct {
+	egress.Status
+	Rotating     bool            `json:"rotating"`
+	LastRotation *EgressRotation `json:"last_rotation,omitempty"`
+	Error        string          `json:"error,omitempty"`
+}
+
+// egressPayload is the shared GET/POST response: current status, whether a
+// rotation owns the barrier, and the last successful rotation.
+func (s *Server) egressPayload(st egress.Status) egressStatusResponse {
+	out := egressStatusResponse{
+		Status:   st,
+		Rotating: s.engine != nil && s.engine.Rotating(),
+	}
+	if s.m != nil && s.m.Rotating() {
+		out.Rotating = true
+	}
+	if s.m != nil {
+		if rot, ok := s.m.LastRotation(); ok {
+			out.LastRotation = &rot
+		}
+	}
+	return out
+}
+
+// getEgress reports the identity plus rotation state. A tunnel read failure is
+// returned as data alongside the status: the operator needs to see "down" even
+// when the driver cannot answer cleanly.
+func (s *Server) getEgress(w http.ResponseWriter, r *http.Request) {
+	st, err := s.m.EgressStatus(r.Context())
+	payload := s.egressPayload(st)
+	if err != nil {
+		payload.Error = locale.ErrorMessage(responseLanguage(w), err)
+	}
+	writeJSON(w, 200, payload)
+}
+
+// rotateEgressRoute performs one coordinated rotation. An empty location lets the
+// driver pick a different relay.
+func (s *Server) rotateEgressRoute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Location string `json:"location"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, 400, err)
+		return
+	}
+	if s.m.Egress() == nil {
+		writeErr(w, 400, locale.Text(responseLanguage(w), "no egress driver is configured"))
+		return
+	}
+	st, err := s.RotateEgress(r.Context(), strings.TrimSpace(req.Location))
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, 200, s.egressPayload(st))
+}
+
 // getSettings returns the runtime app settings the UI toggles. The Brave API key
 // is returned as a boolean presence flag (brave_key_set), never the value itself,
 // so the UI can show "configured" without echoing the secret back.
@@ -3461,6 +3718,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"egress_driver":            s.m.EgressDriver(),          // Outbound identity driver: none or mullvad.
 		"egress_rps":               egressRPS,                   // Per-host requests/second enforced by the MITM proxy; 0 = no budget.
 		"egress_burst":             egressBurst,                 // Token-bucket burst per host, default 5.
+		"egress_auto_rotate":       s.m.EgressAutoRotate(),      // Rotate the exit automatically after a host burns through HTTP 429s.
+		"egress_burn_threshold":    s.m.EgressBurnThreshold(),   // Per-host 429 count that triggers automatic rotation, default 50.
 		"python_interpreter":       strings.TrimSpace(pyStored), // User/automatically configured value; empty uses runtime detection.
 		"workers":                  s.m.Workers(),               // Concurrent worker agents, default 3; applies to subsequently started tasks.
 		"task_concurrency_enabled": concOn,                      // Task concurrency-limit switch, disabled by default.
@@ -3543,10 +3802,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		EgressDriver     *string `json:"egress_driver"`    // none or mullvad; null preserves.
 		// Per-host egress budget enforced inside the MITM proxy. EgressRPS 0 disables
 		// it; omitted fields preserve the stored pair, so a burst-only edit is safe.
-		EgressRPS    *float64 `json:"egress_rps"`
-		EgressBurst  *int     `json:"egress_burst"`
-		PythonInterp *string  `json:"python_interpreter"` // Python interpreter path for custom script tools.
-		Workers      *int     `json:"workers"`            // Positive concurrent-worker count; applies to subsequently started tasks.
+		EgressRPS   *float64 `json:"egress_rps"`
+		EgressBurst *int     `json:"egress_burst"`
+		// Automatic rotation on burn; the monitor reads these each tick, so no agent
+		// rebuild is needed. Omitted fields preserve the stored value.
+		EgressAutoRotate    *bool   `json:"egress_auto_rotate"`
+		EgressBurnThreshold *int    `json:"egress_burn_threshold"`
+		PythonInterp        *string `json:"python_interpreter"` // Python interpreter path for custom script tools.
+		Workers             *int    `json:"workers"`            // Positive concurrent-worker count; applies to subsequently started tasks.
 		// Task concurrency caps running tasks. Disabled means unlimited; enabled queues overflow and admits it when slots open.
 		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
 		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
@@ -3756,6 +4019,18 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true // proxy + CA presence is baked into agents at build time → rebuild
+	}
+	if req.EgressAutoRotate != nil {
+		if err := s.m.SetEgressAutoRotate(*req.EgressAutoRotate); err != nil {
+			writeError(w, 500, err)
+			return
+		}
+	}
+	if req.EgressBurnThreshold != nil {
+		if err := s.m.SetEgressBurnThreshold(*req.EgressBurnThreshold); err != nil {
+			writeError(w, 400, err)
+			return
+		}
 	}
 	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.

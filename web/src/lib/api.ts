@@ -75,6 +75,8 @@ import type {
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
+  NowBoard,
+  NowExit,
   PromptVar,
   PromptVersion,
   SessionTokenUsage,
@@ -237,6 +239,22 @@ export const api = {
   // ---- tasks ----
   tasks: () =>
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
+
+  // ---- operator Now board ----
+  // Read-only snapshot behind the 5 s poll. Normalize collections here so a
+  // partial payload still renders an empty host table instead of crashing.
+  nowBoard: () =>
+    get<NowBoard>("/now").then((r) => ({
+      egress: r.egress,
+      budget: {
+        rps: r.budget?.rps ?? 0,
+        burst: r.budget?.burst ?? 0,
+        hosts: arr(r.budget?.hosts),
+      },
+      tasks: arr(r.tasks).map((task) => ({ ...task, hosts: arr(task.hosts) })),
+    })),
+  // One coordinated rotation. An empty location lets the driver choose.
+  rotateEgress: (location = "") => post<NowExit>("/egress/rotate", { location: location.trim() }),
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
   createTask: (input: {
     name?: string;

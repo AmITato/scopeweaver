@@ -1534,6 +1534,31 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return { active: mockActiveTask };
   }
 
+  // Operator Now board: read the live fixture and simulate one rotation.
+  if (path === "/now" && m === "GET") {
+    D.nowBoard.egress.safe = D.nowBoard.egress.connected || D.nowBoard.egress.lockdown;
+    return cloneDemoFixture(D.nowBoard);
+  }
+  if (path === "/egress/rotate" && m === "POST") {
+    const location = typeof b.location === "string" ? b.location.trim() : "";
+    const egress = D.nowBoard.egress;
+    egress.rotating = false;
+    egress.connected = true;
+    egress.safe = true;
+    egress.exit_ip = location ? "185.65.134.77" : "185.65.134.64";
+    egress.city = location || "Frankfurt am Main";
+    egress.country = location ? "" : "DE";
+    return {
+      driver: egress.driver,
+      connected: egress.connected,
+      lockdown: egress.lockdown,
+      exit_ip: egress.exit_ip,
+      city: egress.city,
+      country: egress.country,
+      rotating: false,
+    };
+  }
+
   // Task coverage, coverage graph, and asset references.
   if (seg[0] === "tasks" && seg[2] === "coverage" && seg.length === 3) return D.coverage;
   if (seg[0] === "tasks" && seg[2] === "coverage-graph") return D.coverageGraph;

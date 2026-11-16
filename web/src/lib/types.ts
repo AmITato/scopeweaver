@@ -47,6 +47,69 @@ export interface Task {
   stealth?: Record<string, unknown>; // Stealth budget and backoff state.
 }
 
+// Operator "Now" board (GET /api/now). Collections are always arrays; the
+// endpoint caps tasks at 50 and each task's hosts at 20.
+export interface NowHost {
+  host: string;
+  /* Task rows carry live workers and held leases; budget rows omit them. */
+  workers?: number;
+  leases?: number;
+  requests: number;
+  s429: number;
+  /* Budget rows carry the last status and the 403 count; task rows do not. */
+  s403?: number;
+  last_status?: number;
+  cooldown_until: number; // Unix seconds; 0 or past means ready.
+}
+
+export interface NowEgress {
+  driver: string;
+  managed: boolean;
+  connected: boolean;
+  lockdown: boolean;
+  exit_ip: string;
+  city: string;
+  country: string;
+  safe: boolean;
+  rotating: boolean;
+}
+
+export interface NowBudget {
+  rps: number;
+  burst: number;
+  hosts: NowHost[];
+}
+
+export interface NowTask {
+  id: string;
+  name: string;
+  mode: TaskMode | string;
+  phase: string;
+  status: TaskStatus | string;
+  workers: number;
+  residue_open: number;
+  hosts: NowHost[];
+}
+
+export interface NowBoard {
+  egress: NowEgress;
+  budget: NowBudget;
+  tasks: NowTask[];
+}
+
+// POST /api/egress/rotate returns the fresh driver status. managed/safe are
+// board-only derivations, so the success path reads the exit fields directly.
+export interface NowExit {
+  driver: string;
+  connected: boolean;
+  lockdown: boolean;
+  exit_ip?: string;
+  hostname?: string;
+  city?: string;
+  country?: string;
+  rotating: boolean;
+}
+
 export interface TaskCategory {
   id: number;
   name: string;

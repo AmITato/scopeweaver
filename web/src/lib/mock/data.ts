@@ -28,6 +28,7 @@ import type {
   MCPServer,
   MCPTool,
   MissingSkill,
+  NowBoard,
   PromptVar,
   PromptVersion,
   SessionTokenUsage,
@@ -3574,6 +3575,101 @@ export const tools: Tool[] = [
 ];
 
 // ── Settings ─────────────────────────────────────────────────────────────────
+// Operator Now board: one op task with live workers and residue, one pentest task.
+// The cooldown base is fixed at module load so a poll does not keep changing the
+// signature guard while the countdown runs.
+const nowDemoCooldown = Math.floor(Date.now() / 1000) + 75;
+
+export const nowBoard: NowBoard = {
+  egress: {
+    driver: "mullvad",
+    managed: true,
+    connected: true,
+    lockdown: true,
+    exit_ip: "185.65.134.12",
+    city: "Stockholm",
+    country: "SE",
+    safe: true,
+    rotating: false,
+  },
+  budget: {
+    rps: 1,
+    burst: 5,
+    hosts: [
+      {
+        host: "shop.acme.test",
+        requests: 42,
+        s429: 0,
+        s403: 0,
+        last_status: 200,
+        cooldown_until: 0,
+      },
+      {
+        host: "api.acme.test",
+        requests: 18,
+        s429: 2,
+        s403: 1,
+        last_status: 429,
+        cooldown_until: nowDemoCooldown,
+      },
+      {
+        host: "vpn.acme.test",
+        requests: 6,
+        s429: 0,
+        s403: 0,
+        last_status: 200,
+        cooldown_until: 0,
+      },
+    ],
+  },
+  tasks: [
+    {
+      id: "t-acme-web",
+      get name() {
+        return swt("interface.m2432");
+      },
+      mode: "op",
+      phase: "active",
+      status: "running",
+      workers: 3,
+      residue_open: 2,
+      hosts: [
+        { host: "shop.acme.test", workers: 2, leases: 1, requests: 42, s429: 0, cooldown_until: 0 },
+        { host: "api.acme.test", workers: 1, leases: 1, requests: 18, s429: 2, cooldown_until: nowDemoCooldown },
+      ],
+    },
+    {
+      id: "t-acme-api",
+      get name() {
+        return swt("interface.m2435");
+      },
+      mode: "pentest",
+      phase: "active",
+      status: "running",
+      workers: 2,
+      residue_open: 0,
+      hosts: [
+        { host: "api.acme.test", workers: 1, leases: 0, requests: 18, s429: 2, cooldown_until: nowDemoCooldown },
+        { host: "vpn.acme.test", workers: 1, leases: 1, requests: 6, s429: 0, cooldown_until: 0 },
+      ],
+    },
+    {
+      id: "t-shop-pay",
+      get name() {
+        return swt("interface.m2437");
+      },
+      mode: "op",
+      phase: "persisted",
+      status: "paused",
+      workers: 0,
+      residue_open: 1,
+      hosts: [
+        { host: "shop.acme.test", workers: 0, leases: 0, requests: 42, s429: 0, cooldown_until: 0 },
+      ],
+    },
+  ],
+};
+
 export const settings: Settings = {
   traffic_capture: true,
   agent_traffic_binding: false,
@@ -4526,4 +4622,4 @@ export function llmRecordDetail(id: number, records = llmRecords) {
 }
 
 // Prepare only authored initial fixtures; editable runtime values are never rescanned.
-for (const fixture of [ACTIVE_TASK, tasks, taskCategories, taskTemplates, getTask, companies, assets, assetCounts, findings, explorationGraph, intents, frontier, activity, tokenWorkers, tokenSessions, tokenTotal, dailyTokens, convTokens, traffic, trafficHosts, trafficDetail, audit, llmProfiles, llmConfig, agents, mcpServers, mcpToolsById, skills, skillCalls, missingSkills, tools, settings, llmPool, interceptRules, interceptPending, interceptHistory, interceptDetails, conversations, conversationMessages, coverage, coverageGraph, commandRecords, llmRecords, llmTasks]) prepareDemoFixture(fixture);
+for (const fixture of [ACTIVE_TASK, tasks, taskCategories, taskTemplates, getTask, companies, assets, assetCounts, findings, explorationGraph, intents, frontier, activity, tokenWorkers, tokenSessions, tokenTotal, dailyTokens, convTokens, traffic, trafficHosts, trafficDetail, audit, llmProfiles, llmConfig, agents, mcpServers, mcpToolsById, skills, skillCalls, missingSkills, tools, settings, nowBoard, llmPool, interceptRules, interceptPending, interceptHistory, interceptDetails, conversations, conversationMessages, coverage, coverageGraph, commandRecords, llmRecords, llmTasks]) prepareDemoFixture(fixture);

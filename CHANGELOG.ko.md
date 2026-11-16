@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### OpenCode SDK 브리지의 Zod 권고 완전 해소 (#67)
+
+#### 보안
+- OpenCode SDK 브리지가 의존성 트리 전체에서 `zod`를 4.6.7로 강제하므로, `bun audit`이 더 이상 GHSA-mrhx-c7xc-m3w5를 보고하지 않습니다. `legacy` 런타임의 `@opencode-ai/plugin` 1.19.4(4.1.8 고정)와 `gitlab-ai-provider` 6.24.0(`zod ^3.25.76` 선언)도 포함됩니다. `gitlab-ai-provider`는 zod 4.6.7이 지원하는 `z.object`·`z.string`·`z.number`·`z.record`·`z.infer`만 사용하며, v3 방식의 1개 인자 `z.record`도 지원됩니다. 선언된 zod 3 계약은 강제로 덮어쓴 것입니다. zod 4.6.7에서 로드, OAuth 토큰 스키마 검증, 모델 생성은 확인했지만 실제 GitLab Duo 요청은 시험하지 않았습니다.
+
 ### OpenCode SDK 브리지 런타임 2.3.0 (#67)
 
 #### 보안

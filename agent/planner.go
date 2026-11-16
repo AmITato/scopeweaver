@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -37,6 +38,7 @@ type Planner struct {
 	webSearch         WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir           string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
+	egress            egress.Provider                        // outbound identity for the egress tools
 	profileFn         func() string                          // resolver: engagement profile ("pentest" default, "op" stealth; nil = pentest)
 	nonStreamingFn    func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn      func() bool                            // resolver: use experimental noa compaction? (nil = off)
@@ -115,6 +117,9 @@ func (p *Planner) wantConstraints() bool { return p.injectConstraints == nil || 
 func (p *Planner) SetProfile(fn func() string) { p.profileFn = fn }
 
 func (p *Planner) profile() string { return resolveProfile(p.profileFn) }
+
+// SetEgress wires the outbound identity provider used by the egress tools.
+func (p *Planner) SetEgress(provider egress.Provider) { p.egress = provider }
 
 // Profile reports the resolved engagement profile (tests and diagnostics).
 func (p *Planner) Profile() string { return p.profile() }
@@ -350,6 +355,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// runs in a detached goroutine so it never adds latency to this round.
 	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner", locale.FromContext(ctx))
+	tsx.SetEgress(p.egress)
 	tsx.SetFindingRecorder(p.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())

@@ -3458,6 +3458,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"tavily_key_set":           strings.TrimSpace(tavilyKey) != "",
 		"web_search_proxy":         proxy,                       // Independent HTTP/HTTPS/SOCKS5 egress proxy; empty means direct.
 		"global_proxy":             s.m.GlobalProxy(),           // Global HTTP/HTTPS/SOCKS5 egress proxy for all target traffic; empty means direct.
+		"egress_driver":            s.m.EgressDriver(),          // Outbound identity driver: none or mullvad.
 		"egress_rps":               egressRPS,                   // Per-host requests/second enforced by the MITM proxy; 0 = no budget.
 		"egress_burst":             egressBurst,                 // Token-bucket burst per host, default 5.
 		"python_interpreter":       strings.TrimSpace(pyStored), // User/automatically configured value; empty uses runtime detection.
@@ -3539,6 +3540,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		TavilyKey        *string `json:"tavily_search_api_key"`
 		WebSearchProxy   *string `json:"web_search_proxy"` // Independent HTTP/HTTPS/SOCKS5 proxy; null preserves it and empty clears it.
 		GlobalProxy      *string `json:"global_proxy"`     // Global HTTP/HTTPS/SOCKS5 proxy; null preserves it and empty selects direct connections.
+		EgressDriver     *string `json:"egress_driver"`    // none or mullvad; null preserves.
 		// Per-host egress budget enforced inside the MITM proxy. EgressRPS 0 disables
 		// it; omitted fields preserve the stored pair, so a burst-only edit is safe.
 		EgressRPS    *float64 `json:"egress_rps"`
@@ -3723,6 +3725,13 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true
+	}
+	if req.EgressDriver != nil {
+		if err := s.m.SetEgressDriver(*req.EgressDriver); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		changed = true // the tool binding reads the provider at agent build time
 	}
 	if req.GlobalProxy != nil {
 		// Validation failure (bad scheme/host) is a client error, not a 500.

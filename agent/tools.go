@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -82,6 +83,9 @@ type ToolSet struct {
 	// intent id (engine callback, wired by the planner): the worker injects it before
 	// its next tool call and re-plans, without being killed. nil = tool unavailable.
 	steerWork func(intentID int64, msg string) error
+	// egress, if set, reports and rotates the machine's outbound identity (nil when
+	// the tunnel is unmanaged). The tunnel is box-wide, so rotation is coordinated.
+	egress egress.Provider
 	// enrich, if set, receives async auto-completion triggers (DNS resolve for a
 	// domain, HTTP probe for a site). nil = no engine enrichment.
 	enrich EnrichTrigger
@@ -2142,6 +2146,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// residue_* drives the wrap-up: clean obvious objects, keep what must survive.
 		t.residueAdd(), t.residueList(), t.residueSet(), t.residueRemove(), t.residueKeepAll(),
 		t.phaseSet(),
+		t.egressStatusTool(),
 		// style_* captures the target's own naming; blend_name renders a conforming name.
 		t.styleRecord(), t.styleGet(), t.styleHarvest(), t.blendName(), t.styleClear(),
 	}

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -31,6 +32,29 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 		return
 	}
 	s.seed(t, seedText)
+	// Leak guard: an op task must not run when target traffic could leave from the
+	// host IP. A blocked tunnel is safe (lockdown); a down tunnel without lockdown
+	// is exactly the failure this guard exists for.
+	if t.Mode == db.TaskModeOp && s.m.Egress() != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		st, err := s.m.EgressStatus(ctx)
+		cancel()
+		if err != nil || !st.Safe() {
+			if id, convErr := strconv.ParseInt(t.ID, 10, 64); convErr == nil {
+				_ = s.m.pg.SetPaused(id, true)
+			}
+			msg := "Egress guard: the tunnel is down and lockdown is off, so target traffic would leave from the host IP. Task left paused."
+			if err != nil {
+				msg = "Egress guard: could not read the tunnel status (" + err.Error() + "). Task left paused."
+			}
+			log.Printf(locale.Text(locale.ServerDefault(), "[egress] task %s: %s"), t.ID, msg)
+			if s.engine != nil {
+				s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "text", Summary: msg})
+			}
+			s.engine.decInflight(t.ID)
+			return
+		}
+	}
 	// Op engagements start silent: tell the planner the phase rule once.
 	if t.Mode == db.TaskModeOp {
 		if _, err := t.Store.AddNode(db.KindHint, map[string]any{

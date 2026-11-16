@@ -455,10 +455,25 @@ Detached user-message intents (`runDetachedIntent`) bypass the pool deliberately
 
 ## 8. Egress identity
 
-`egress_identities (id, kind, url, label, burned_at, last_used)` plus `task_host_identity`. Assignment
-is sticky per host: rotate on burn, never mid-chain. A burned identity is not reused for that target.
-Sensitive target traffic and LLM traffic must not share an exit. Public-resolver DNS is separate from
-the ops box.
+On a box running Mullvad, **the tunnel is the identity**. There is no per-request proxy to pick: the
+whole machine exits through one relay, and the model stream shares it. The package `egress` therefore
+models a single identity at a time, with history, not a pool of parallel exits.
+
+- `egress_driver` is `none` (unmanaged) or `mullvad`. `Mullvad.Status` reads `mullvad status -j`
+  (exit IP, relay, city, country, interface) plus `mullvad lockdown-mode get`.
+- `Status.Safe()` is true only when the tunnel is connected **or** lockdown blocks traffic while it is
+  down. An op task is refused at launch otherwise: a down tunnel without lockdown leaks the host IP.
+- `egress_rotate` (main agent only) runs `mullvad relay set location <sel>` then `mullvad reconnect -w`
+  and polls until the exit IP actually changes; an unchanged exit is an error, not a success.
+- Rotation is a wave boundary, never mid-chain: it moves every worker and the model stream. Drain
+  in-flight target traffic first (the host leases make that measurable) and let the current model call
+  finish. Automatic rotation on burn is not wired yet; the operator or the main agent triggers it.
+
+Per-host parallel exits would need one WireGuard interface per network namespace. That adds leak
+surface and complicates the model path, so it is deliberately out of scope.
+
+History and sticky per-host binding (`egress_identities`, `task_host_identity`) are not implemented;
+the identity is recorded in task facts when it matters.
 
 ## 9. Passive first
 

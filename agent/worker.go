@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
@@ -82,6 +83,7 @@ type Worker struct {
 	recordingOn       bool // traffic capture is on (traffic_* tools exist)
 	// profileFn resolves this task's engagement profile ("pentest" default, "op"
 	// stealth). Read per run so a task profile switch needs no rebuild.
+	egress    egress.Provider // outbound identity for the egress tools
 	profileFn func() string
 	// nonStreamingFn resolves whether this run uses the non-streaming (Complete)
 	// path. Read per run so a profile/task toggle takes effect without rebuilding
@@ -156,6 +158,9 @@ func (w *Worker) wantConstraints() bool { return w.injectConstraints == nil || w
 func (w *Worker) SetProfile(fn func() string) { w.profileFn = fn }
 
 func (w *Worker) profile() string { return resolveProfile(w.profileFn) }
+
+// SetEgress wires the outbound identity provider used by the egress tools.
+func (w *Worker) SetEgress(provider egress.Provider) { w.egress = provider }
 
 // Profile reports the resolved engagement profile (tests and diagnostics).
 func (w *Worker) Profile() string { return w.profile() }
@@ -377,6 +382,7 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name, locale.FromContext(ctx))
+	tsx.SetEgress(w.egress)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
 	coverageEnabled := as == nil || as.CoverageEnabled(taskID)

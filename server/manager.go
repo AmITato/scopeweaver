@@ -18,6 +18,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
@@ -271,6 +272,9 @@ type Manager struct {
 	braveKey         string
 	tavilyKey        string
 	webSearchProxy   string
+	// egress is the machine's outbound identity (Mullvad, or nil when unmanaged).
+	// The tunnel is box-wide, so rotation is coordinated, never per request.
+	egress egress.Provider
 	// globalProxy is the egress proxy all target traffic routes through
 	// (http/https/socks5, optional user:pass). Empty = direct. When traffic
 	// capture is on it becomes the MITM's upstream; when capture is off it is
@@ -296,8 +300,9 @@ const (
 	// settingEgressRPS/settingEgressBurst are the per-host egress budget enforced
 	// inside the MITM proxy: sustained requests/second per target host (0 = off)
 	// and the token-bucket burst (default 5). Independent of traffic capture.
-	settingEgressRPS   = "egress_rps"
-	settingEgressBurst = "egress_burst"
+	settingEgressDriver = "egress_driver"
+	settingEgressRPS    = "egress_rps"
+	settingEgressBurst  = "egress_burst"
 	// LLM failover is disabled by default. When enabled, agents using the globally active profile
 	// switch to the next profile on insufficient balance, invalid keys, rate limits, or service failures.
 	// settingLLMPoolBindFallback matters only with failover enabled. By default, an explicit agent/task
@@ -559,6 +564,11 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 			m.traffic.SetBudget(rps, burst)
 		}
 		m.traffic.SetCapture(m.trafficOn)
+	}
+	// Outbound identity driver (default: unmanaged). "mullvad" reads the tunnel
+	// status and allows coordinated rotation; empty/none disables both.
+	if v, ok, _ := pg.GetSetting(settingEgressDriver); ok && strings.EqualFold(strings.TrimSpace(v), "mullvad") {
+		m.egress = egress.NewMullvad()
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
@@ -2057,4 +2067,60 @@ func (t *Task) drainTriggers() []agent.TriggerEvent {
 	ev := t.pendingTriggers
 	t.pendingTriggers = nil
 	return ev
+}
+
+// Egress returns the configured outbound identity provider, or nil when the
+// machine's tunnel is unmanaged.
+func (m *Manager) Egress() egress.Provider {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.egress
+}
+
+// EgressStatus reports the current identity and whether exiting is safe.
+func (m *Manager) EgressStatus(ctx context.Context) (egress.Status, error) {
+	p := m.Egress()
+	if p == nil {
+		return egress.Status{Driver: "none", Connected: true, Lockdown: true}, nil
+	}
+	return p.Status(ctx)
+}
+
+// RotateEgress changes the exit between waves. Callers must first drain in-flight
+// target traffic; the model stream shares this tunnel.
+func (m *Manager) RotateEgress(ctx context.Context, location string) (egress.Status, error) {
+	p := m.Egress()
+	if p == nil {
+		return egress.Status{Driver: "none"}, locale.NewError("no egress driver is configured")
+	}
+	return p.Rotate(ctx, location)
+}
+
+// SetEgressDriver selects the driver and persists the choice ("none" disables).
+func (m *Manager) SetEgressDriver(name string) error {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "", "none", "mullvad":
+	default:
+		return locale.Errorf("egress driver must be none or mullvad")
+	}
+	if err := m.pg.SetSetting(settingEgressDriver, name); err != nil {
+		return err
+	}
+	var provider egress.Provider
+	if name == "mullvad" {
+		provider = egress.NewMullvad()
+	}
+	m.mu.Lock()
+	m.egress = provider
+	m.mu.Unlock()
+	return nil
+}
+
+// EgressDriver reports the configured driver name ("none" when unmanaged).
+func (m *Manager) EgressDriver() string {
+	if m.Egress() == nil {
+		return "none"
+	}
+	return "mullvad"
 }

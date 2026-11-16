@@ -587,6 +587,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	wk.SetProfile(profile)
 	wk.SetRecording(s.m.TrafficEnabled())
+	wk.SetEgress(s.m.Egress())
 	wk.SetWebSearch(s.webSearchFor("worker"))
 	wk.SetConstraintInject(s.constraintInjectWorker) // Inject operation constraints into workers; configurable and enabled by default.
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
@@ -600,6 +601,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetSteerWork(s.engine.SteerWork)
 	pl.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	pl.SetProfile(profile)
+	pl.SetEgress(s.m.Egress())
 	pl.SetWebSearch(s.webSearchFor("planner"))
 	pl.SetConstraintInject(s.constraintInjectPlanner) // Inject operation constraints into planners; configurable and enabled by default.
 	// Cold-digest section 7: background cold-node compaction. The engine's authoritative resolver runs
@@ -617,6 +619,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // Experimental noa compaction: platform-level flag read once per run.
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	main.SetProfile(profile)
+	main.SetEgress(s.m.Egress())
 	main.SetWebSearch(s.webSearchFor("mainagent"))
 	main.SetSteerWork(s.engine.SteerWork) // steer_work lets the user correct running work in real time.
 	bundle := &taskAgentBundle{

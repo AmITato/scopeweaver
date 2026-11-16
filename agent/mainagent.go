@@ -6,6 +6,7 @@ import (
 	"github.com/Autumn-27/artex/locale"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/egress"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -35,6 +36,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	egress          egress.Provider                        // outbound identity for the egress tools
 	profileFn       func() string                          // resolver: engagement profile ("pentest" default, "op" stealth; nil = pentest)
 }
 
@@ -66,6 +68,9 @@ func (m *MainAgent) maxTokens() int {
 func (m *MainAgent) SetProfile(fn func() string) { m.profileFn = fn }
 
 func (m *MainAgent) profile() string { return resolveProfile(m.profileFn) }
+
+// SetEgress wires the outbound identity provider used by the egress tools.
+func (m *MainAgent) SetEgress(provider egress.Provider) { m.egress = provider }
 
 // Profile reports the resolved engagement profile (tests and diagnostics).
 func (m *MainAgent) Profile() string { return m.profile() }
@@ -119,6 +124,7 @@ func mainAgentSystemFor(goal, dataDir, workDir, profile string, langs ...locale.
 // worker/planner sessions — not just the final answer.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
 	tsx := NewToolSet(ts, "human", locale.FromContext(ctx))
+	tsx.SetEgress(m.egress)
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())

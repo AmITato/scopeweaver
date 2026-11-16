@@ -1299,7 +1299,19 @@ func (e *Engine) residueBlocks(t *Task) bool {
 // assets; an intent with no resolvable host is claimed without a lease.
 func (e *Engine) claimNext(t *Task, name string) (*db.Node, []string, bool) {
 	fr, _ := t.Store.Frontier(20)
+	taskNum, _ := strconv.ParseInt(t.ID, 10, 64)
+	// Passive phase: only intents explicitly tagged passive may run. Untagged
+	// intents default to active, so a planner that forgets the tag cannot make
+	// noise during silent reconnaissance.
+	phase := db.TaskPhaseActive
+	if e.m.pg != nil {
+		phase = e.m.pg.TaskPhase(taskNum)
+	}
+	passiveOnly := phase == db.TaskPhasePassive
 	for _, in := range fr {
+		if passiveOnly && db.IntentPhase(in) != db.TaskPhasePassive {
+			continue
+		}
 		leases, ok := e.claimHostLeases(t, in, name)
 		if !ok {
 			continue

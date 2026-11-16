@@ -462,9 +462,20 @@ the ops box.
 
 ## 9. Passive first
 
-`task.phase` (`passive | active | persisted`). In `passive`, active intents are refused at claim.
-Passive work: CT, DNS history, archives, Git leaks, package registries, S3 listings. Exhaustion or an
-explicit skip moves the phase. Most of this engagement's best findings were credential leaks in public
+`tasks.phase` is `passive | active | persisted`; op tasks are created passive, pentest stays active.
+
+- Intents carry `payload.phase` via the `add_intent` `phase` field. Untagged intents default to
+  **active**, so a planner that forgets the tag cannot make noise during silent work.
+- `claimNext` skips every non-passive intent while the task is passive, so active work queues instead
+  of running. A task created with `seed_first_intent` therefore holds its seeded intent until the
+  phase advances.
+- `phase_set` (planner and main agent) is the only way to advance, and it reports how many intents are
+  still waiting on the phase. Completion is unaffected: passive does not block goals.
+- An op task gets one system hint at creation describing the rule, so the planner learns it without a
+  prompt change and its six translations.
+
+Passive work: certificate transparency, DNS history, archives, Git and credential leaks, package
+registries, public listings. Most of this engagement's best findings were credential leaks in public
 sources — silent work that was never sequenced as silent work.
 
 ## 10. Quiet evidence

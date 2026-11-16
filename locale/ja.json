@@ -2044,5 +2044,7 @@
   "host lease requires a host": "ホストリースにはホストが必要です",
   "host lease requires an owner": "ホストリースには所有者が必要です",
   "host lease requires host and owner": "ホストリースにはホストと所有者が必要です",
-  "host lease requires task context": "ホストリースにはタスクコンテキストが必要です"
+  "host lease requires task context": "ホストリースにはタスクコンテキストが必要です",
+  "task phase must be passive, active or persisted": "フェーズは passive、active、persisted のいずれかです",
+  "task phase requires task context": "フェーズにはタスクコンテキストが必要です"
 }

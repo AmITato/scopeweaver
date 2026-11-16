@@ -537,6 +537,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     cover_story    TEXT NOT NULL DEFAULT '',
     house_style    JSONB NOT NULL DEFAULT '{}',
     stealth        JSONB NOT NULL DEFAULT '{}',
+    -- Engagement phase: passive (silent recon only), active, persisted. Op tasks
+    -- start passive; the claim gate holds active intents until the phase advances.
+    phase          TEXT NOT NULL DEFAULT 'active',
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -559,6 +562,12 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false
 -- and exposes add_task_scope/list_untested_assets to agents; false disables all of these (see task_scope.go).
 -- Existing tasks default true. Company links (task_scope kind=company) are independent of this switch.
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'active';
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_tasks_phase') THEN
+    ALTER TABLE tasks ADD CONSTRAINT ck_tasks_phase CHECK (phase IN ('passive','active','persisted'));
+  END IF;
+END $$;
 -- Engagement profile and stealth context. mode='pentest' keeps historical behaviour; 'op'
 -- enables the simulation pipeline, cover story, house style and noise budget (docs/opsec-blend.md §4).
 -- All defaulted so existing tasks and unaware callers behave exactly as before.

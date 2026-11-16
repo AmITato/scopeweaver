@@ -31,6 +31,14 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 		return
 	}
 	s.seed(t, seedText)
+	// Op engagements start silent: tell the planner the phase rule once.
+	if t.Mode == db.TaskModeOp {
+		if _, err := t.Store.AddNode(db.KindHint, map[string]any{
+			"text": "Engagement phase: passive. Only intents tagged phase=passive are claimable now: certificate transparency, DNS history, archives, code and credential leaks, public listings, and reading what is already reachable without touching the target. Dispatch those first. Call phase_set(active) when passive work is exhausted or the objective already requires a touch.",
+		}, 0, "active", "system", nil); err != nil {
+			log.Printf(locale.Text(locale.ServerDefault(), "[op] task %s could not add the phase hint: %v"), t.ID, err)
+		}
+	}
 	if seedFirstIntent {
 		s.seedFirstIntent(t)
 	}

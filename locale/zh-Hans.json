@@ -1992,5 +1992,7 @@
   "host lease requires a host": "主机租约需要主机",
   "host lease requires an owner": "主机租约需要所有者",
   "host lease requires host and owner": "主机租约需要主机和所有者",
-  "host lease requires task context": "主机租约需要任务上下文"
+  "host lease requires task context": "主机租约需要任务上下文",
+  "task phase must be passive, active or persisted": "阶段必须为 passive、active 或 persisted",
+  "task phase requires task context": "阶段需要任务上下文"
 }

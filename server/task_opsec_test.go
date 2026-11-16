@@ -322,3 +322,40 @@ func TestClaimNextIgnoresLeasesForPentest(t *testing.T) {
 		t.Fatal("pentest must allow two workers on one host")
 	}
 }
+
+// TestPassivePhaseHoldsActiveIntents pins the phase gate: in passive only tagged
+// intents are claimable, and phase_set(active) releases the rest.
+func TestPassivePhaseHoldsActiveIntents(t *testing.T) {
+	s, task, _ := opsecTestServer(t)
+	taskID, err := strconv.ParseInt(task.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := db.TaskModeOp
+	if _, err := s.m.pg.UpdateTask(taskID, db.TaskPatch{Mode: &mode}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.m.pg.SetTaskPhase(taskID, db.TaskPhasePassive); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := task.Store.AddIntent(map[string]any{"summary": "active probe"}, 9, nil, "planner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.engine.claimNext(task, "work#1"); ok {
+		t.Fatal("untagged intent must not be claimed during passive")
+	}
+	if _, err := task.Store.AddIntent(map[string]any{"summary": "ct logs", "phase": "passive"}, 5, nil, "planner"); err != nil {
+		t.Fatal(err)
+	}
+	claimed, leases, ok := s.engine.claimNext(task, "work#1")
+	if !ok || claimed == nil {
+		t.Fatal("passive intent must be claimable")
+	}
+	s.engine.releaseHostLeases(task, leases, "work#1")
+	if _, err := s.m.pg.SetTaskPhase(taskID, db.TaskPhaseActive); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := s.engine.claimNext(task, "work#2"); !ok {
+		t.Fatal("active phase must release the untagged intent")
+	}
+}

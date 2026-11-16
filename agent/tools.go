@@ -1078,6 +1078,9 @@ type intentItem struct {
 	AssetIDs  []json.RawMessage `json:"asset_ids"`
 	ParentIDs []json.RawMessage `json:"parent_ids"`
 	Priority  int               `json:"priority"`
+	// Phase tags silent reconnaissance. During an op task's passive phase only
+	// phase=passive intents are claimable; untagged intents default to active.
+	Phase string `json:"phase"`
 }
 
 // addOneIntent creates an intent, links upstream lineage, and returns its ID.
@@ -1119,7 +1122,15 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			return 0, fmt.Errorf("%s", b.String())
 		}
 	}
+	if it.Phase != "" {
+		if _, ok := db.NormalizeTaskPhase(it.Phase); !ok {
+			return 0, locale.Errorf("phase must be passive, active or persisted")
+		}
+	}
 	payload := map[string]any{"summary": it.Summary}
+	if it.Phase != "" {
+		payload["phase"] = it.Phase
+	}
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
@@ -1152,11 +1163,13 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 				"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": locale.Text(t.language, "Target asset IDs from list_assets, not exploration node IDs (zero/one/many).")},
 				"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": locale.Text(t.language, "Optional upstream anchors (zero/one/many): existing confirmed fact/finding node IDs supporting this direction. Never use intent/goal/hint IDs; leave empty for a new top-level direction.")},
 				"priority":   intp(locale.Text(t.language, "Priority 0-10, default 5")),
+				"phase":      str(locale.Text(t.language, "Optional: passive for read-only reconnaissance (CT, DNS history, archives, code leaks, public listings). Omit for active work that touches the target.")),
 			}, "summary")},
 			"summary":    str(locale.Text(t.language, "Single item: one sentence describing what to do and why. A clear direction does not require an asset ID.")),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": locale.Text(t.language, "Target asset IDs from list_assets, not exploration node IDs (zero/one/many). Include IDs whenever the direction targets concrete sites/endpoints/parameters/hosts: they identify targets, support coverage deduplication, and connect asset lineage. Leave empty only for global reconnaissance with no concrete asset.")},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": locale.Text(t.language, "Optional upstream anchors (zero/one/many): existing confirmed fact/finding node IDs supporting this direction. Never use intent/goal/hint IDs. Include all combined facts. Leave empty for new top-level reconnaissance; it attaches automatically to the task's origin fact.")},
 			"priority":   intp(locale.Text(t.language, "Priority 0-10, default 5")),
+			"phase":      str(locale.Text(t.language, "Single item: passive or active")),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2128,6 +2141,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.listUntestedAssets(),
 		// residue_* drives the wrap-up: clean obvious objects, keep what must survive.
 		t.residueAdd(), t.residueList(), t.residueSet(), t.residueRemove(), t.residueKeepAll(),
+		t.phaseSet(),
 		// style_* captures the target's own naming; blend_name renders a conforming name.
 		t.styleRecord(), t.styleGet(), t.styleHarvest(), t.blendName(), t.styleClear(),
 	}

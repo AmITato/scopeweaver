@@ -2044,5 +2044,7 @@
   "host lease requires a host": "主機租約需要主機",
   "host lease requires an owner": "主機租約需要擁有者",
   "host lease requires host and owner": "主機租約需要主機和擁有者",
-  "host lease requires task context": "主機租約需要任務上下文"
+  "host lease requires task context": "主機租約需要任務上下文",
+  "task phase must be passive, active or persisted": "階段必須為 passive、active 或 persisted",
+  "task phase requires task context": "階段需要任務上下文"
 }

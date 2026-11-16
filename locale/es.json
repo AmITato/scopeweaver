@@ -2044,5 +2044,7 @@
   "host lease requires a host": "el arrendamiento de host requiere un host",
   "host lease requires an owner": "el arrendamiento de host requiere un propietario",
   "host lease requires host and owner": "el arrendamiento de host requiere host y propietario",
-  "host lease requires task context": "el arrendamiento de host requiere contexto de tarea"
+  "host lease requires task context": "el arrendamiento de host requiere contexto de tarea",
+  "task phase must be passive, active or persisted": "la fase debe ser passive, active o persisted",
+  "task phase requires task context": "la fase requiere contexto de tarea"
 }

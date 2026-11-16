@@ -109,6 +109,8 @@ func init() {
 	Register("host lease requires an owner", "host lease requires an owner", "호스트 임차에는 소유자가 필요합니다")
 	Register("host lease requires host and owner", "host lease requires host and owner", "호스트 임차에는 호스트와 소유자가 필요합니다")
 	Register("host lease requires task context", "host lease requires task context", "호스트 임차에는 작업 컨텍스트가 필요합니다")
+	Register("task phase must be passive, active or persisted", "task phase must be passive, active or persisted", "작업 단계는 passive, active 또는 persisted여야 합니다")
+	Register("task phase requires task context", "task phase requires task context", "작업 단계에는 작업 컨텍스트가 필요합니다")
 	Register("residue requires task context", "residue requires task context", "잔류물에는 작업 컨텍스트가 필요합니다")
 	Register("Retest #%d · %s", "Retest #%d · %s", "재검증 #%d · %s")
 	Register("Retest result is too long (summary <= 16 KB, evidence <= 128 KB)", "Retest result is too long (summary <= 16 KB, evidence <= 128 KB)", "재검증 결과가 너무 깁니다(summary 16KB 이하, evidence 128KB 이하)")

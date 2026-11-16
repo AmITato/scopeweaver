@@ -279,6 +279,11 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	if opts.CoverStory != nil {
 		coverStory = strings.TrimSpace(*opts.CoverStory)
 	}
+	// Op engagements start silent: passive reconnaissance before any touch.
+	phase := TaskPhaseActive
+	if mode == TaskModeOp {
+		phase = TaskPhasePassive
+	}
 	houseStyle, err := NormalizeTaskOpsecJSON(opts.HouseStyle)
 	if err != nil {
 		return nil, locale.Errorf("%w: house_style must be a JSON object", err)
@@ -323,9 +328,9 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		HouseStyle: houseStyle, Stealth: stealth,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, mode, cover_story, house_style, stealth)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, mode, coverStory, houseStyle, stealth).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, mode, cover_story, house_style, stealth, phase)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, mode, coverStory, houseStyle, stealth, phase).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	if opts.Language != "" {

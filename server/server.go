@@ -738,6 +738,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/update/stream", s.updateStream)
 
 	mux.HandleFunc("GET /api/tasks", s.listTasks)
+	mux.HandleFunc("GET /api/now", s.nowBoard)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/task-categories", s.pgListTaskCategories)
 	mux.HandleFunc("POST /api/task-categories", s.pgCreateTaskCategory)
@@ -1108,6 +1109,70 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"goals_met":     goalsMet,
 	}
 	writeJSON(w, 200, out)
+}
+
+// Now DTOs power the read-only operator board at /api/now (docs/opsec-blend.md
+// §12). Every collection is emitted as an array (never null) so a poll can render
+// the empty state without client-side special cases.
+type NowBoardDTO struct {
+	Egress NowEgressDTO `json:"egress"`
+	Budget NowBudgetDTO `json:"budget"`
+	Tasks  []NowTaskDTO `json:"tasks"`
+}
+
+// NowEgressDTO is the machine's outbound identity and its safety state. Exit
+// fields stay present but empty when the egress driver is unmanaged.
+type NowEgressDTO struct {
+	Driver    string `json:"driver"`
+	Managed   bool   `json:"managed"`
+	Connected bool   `json:"connected"`
+	Lockdown  bool   `json:"lockdown"`
+	ExitIP    string `json:"exit_ip"`
+	City      string `json:"city"`
+	Country   string `json:"country"`
+	Safe      bool   `json:"safe"`
+	Rotating  bool   `json:"rotating"`
+}
+
+// NowBudgetDTO is the process-wide per-host egress budget and its counters.
+type NowBudgetDTO struct {
+	RPS   float64            `json:"rps"`
+	Burst int                `json:"burst"`
+	Hosts []NowBudgetHostDTO `json:"hosts"`
+}
+
+// NowBudgetHostDTO is one target host's budget counters (no effective rate: the
+// board shows what happened, not the internal penalty state).
+type NowBudgetHostDTO struct {
+	Host          string `json:"host"`
+	Requests      int64  `json:"requests"`
+	S429          int64  `json:"s429"`
+	S403          int64  `json:"s403"`
+	LastStatus    int    `json:"last_status"`
+	CooldownUntil int64  `json:"cooldown_until"`
+}
+
+// NowTaskDTO is one live engagement with its worker and host rollup.
+type NowTaskDTO struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Mode        string           `json:"mode"`
+	Phase       string           `json:"phase"`
+	Status      string           `json:"status"`
+	Workers     int              `json:"workers"`
+	ResidueOpen int              `json:"residue_open"`
+	Hosts       []NowTaskHostDTO `json:"hosts"`
+}
+
+// NowTaskHostDTO is one host a task currently touches: running intents, held
+// leases, and the shared budget counters for that host.
+type NowTaskHostDTO struct {
+	Host          string `json:"host"`
+	Workers       int    `json:"workers"`
+	Leases        int    `json:"leases"`
+	Requests      int64  `json:"requests"`
+	S429          int64  `json:"s429"`
+	CooldownUntil int64  `json:"cooldown_until"`
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {

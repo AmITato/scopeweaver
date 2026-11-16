@@ -176,6 +176,7 @@ type workExecution struct {
 	cancel context.CancelCauseFunc
 	done   chan error
 	action string // user action: pause | cancel
+	taskID string // owning task ("" for bare control handles registered by tests)
 }
 
 // nextPlannerRound returns the next planner round number for a task (1-based).
@@ -496,9 +497,31 @@ func NewEngine(m *Manager) *Engine {
 
 // registerWork records the cancel for the work currently running intentID.
 func (e *Engine) registerWork(intentID int64, cancel context.CancelCauseFunc) {
+	e.registerTaskWork("", intentID, cancel)
+}
+
+// registerTaskWork is registerWork for a real task-owned execution. The task id is
+// kept beside the control handle so read-only surfaces can count live workers per
+// task without going back to the database.
+func (e *Engine) registerTaskWork(taskID string, intentID int64, cancel context.CancelCauseFunc) {
 	e.workMu.Lock()
-	e.work[intentID] = &workExecution{cancel: cancel, done: make(chan error, 1)}
+	e.work[intentID] = &workExecution{cancel: cancel, done: make(chan error, 1), taskID: taskID}
 	e.workMu.Unlock()
+}
+
+// ActiveWorkersPerTask counts the live work executions per task. It is read-only
+// and used by the Now board (docs/opsec-blend.md §12); entries registered without
+// a task id (bare control handles in tests) are ignored.
+func (e *Engine) ActiveWorkersPerTask() map[string]int {
+	e.workMu.Lock()
+	defer e.workMu.Unlock()
+	out := make(map[string]int, len(e.work))
+	for _, run := range e.work {
+		if run != nil && run.taskID != "" {
+			out[run.taskID]++
+		}
+	}
+	return out
 }
 
 // detachWork removes the live control handle once Execute has returned. complete
@@ -1127,7 +1150,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// per-work child context so the planner's kill_work can stop just this work.
 	workCtx, workCancel := context.WithCancelCause(ectx)
-	e.registerWork(intent.ID, workCancel)
+	e.registerTaskWork(t.ID, intent.ID, workCancel)
 	// wrap the guard hooks so steer_work can inject a mid-run course-correction
 	// for THIS intent (drained before the worker's next tool call).
 	iid := intent.ID
@@ -1528,19 +1551,39 @@ func intentHosts(as *db.AssetStore, in *db.Node) []string {
 	if err != nil {
 		return nil
 	}
+	byID := make(map[int64]*db.Asset, len(assets))
+	for _, a := range assets {
+		if a != nil {
+			byID[a.ID] = a
+		}
+	}
+	return intentHostsFromIDs(ids, byID)
+}
+
+// assetHost is the host key an anchored asset contributes to an intent: the
+// concrete domain first, then an IP, then the registrable domain.
+func assetHost(a *db.Asset) string {
+	if a == nil {
+		return ""
+	}
+	host := a.Domain
+	if host == "" {
+		host = a.IP
+	}
+	if host == "" {
+		host = a.RootDomain
+	}
+	return host
+}
+
+// intentHostsFromIDs maps asset ids to deduplicated host keys using prefetched
+// assets, so a caller holding many intents (the Now board) resolves them with one
+// asset lookup instead of one per intent.
+func intentHostsFromIDs(ids []int64, byID map[int64]*db.Asset) []string {
 	seen := map[string]bool{}
 	var hosts []string
-	for _, a := range assets {
-		if a == nil {
-			continue
-		}
-		host := a.Domain
-		if host == "" {
-			host = a.IP
-		}
-		if host == "" {
-			host = a.RootDomain
-		}
+	for _, id := range ids {
+		host := assetHost(byID[id])
 		if host == "" || seen[host] {
 			continue
 		}

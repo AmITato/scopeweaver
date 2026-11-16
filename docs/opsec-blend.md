@@ -465,12 +465,20 @@ models a single identity at a time, with history, not a pool of parallel exits.
   down. An op task is refused at launch otherwise: a down tunnel without lockdown leaks the host IP.
 - `egress_rotate` (main agent only) runs `mullvad relay set location <sel>` then `mullvad reconnect -w`
   and polls until the exit IP actually changes; an unchanged exit is an error, not a success.
-- Rotation is a wave boundary, never mid-chain: it moves every worker and the model stream. Drain
-  in-flight target traffic first (the host leases make that measurable) and let the current model call
-  finish. Automatic rotation on burn is not wired yet; the operator or the main agent triggers it.
+- Rotation is a wave boundary, never mid-chain. `Server.rotateEgress` sets an engine barrier that stops
+  claim and planner rounds, waits up to 90 s for the work map, LLM calls and task operations to reach
+  zero, and only then calls the provider. A drain timeout aborts the rotation and clears the barrier;
+  it never rotates under load. The agent's `egress_rotate` tool goes through the same path, so manual
+  and automatic rotations share the drain, the audit record and the burn baseline.
+- Auto-rotate: with `egress_auto_rotate` on (default off), a 30 s monitor compares each host's 429
+  count against `egress_burn_threshold` (default 50) and rotates once, with an empty location, at most
+  once per 15 minutes. Every running task gets one system activity recording old and new exit.
 
 Per-host parallel exits would need one WireGuard interface per network namespace. That adds leak
 surface and complicates the model path, so it is deliberately out of scope.
+
+`GET /api/egress` reports the status plus `rotating` and `last_rotation`; `POST /api/egress/rotate`
+takes an optional `location`.
 
 History and sticky per-host binding (`egress_identities`, `task_host_identity`) are not implemented;
 the identity is recorded in task facts when it matters.

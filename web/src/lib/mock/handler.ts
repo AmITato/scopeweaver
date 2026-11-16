@@ -15,6 +15,8 @@ import type {
   ArchiveBatchItem,
   Asset,
   BatchControlItem,
+  ChatControlState,
+  ChatContextView,
   Company,
   CompanyScopeRule,
   Conversation,
@@ -1016,6 +1018,43 @@ export async function mockHandle<T>(method: string, rawPath: string, body?: Body
   return route(m, path, seg, q, b) as T;
 }
 
+function mockChatControls(taskID: string, seg: number, conversationID = "0"): ChatControlState {
+  return {
+    session: { conversation_id: conversationID, task_id: taskID, exploration_id: "0", main_seg: seg },
+    revision: "0",
+    history_revision: "0",
+    paused: false,
+    active: null,
+    inputs: [],
+    capabilities: {},
+  };
+}
+
+function mockChatContext(): ChatContextView {
+  return {
+    measured_input: 0,
+    reserve_estimated: true,
+    before_tokens: 0,
+    after_tokens: 0,
+    run_id: "",
+    history_revision: "0",
+    sequence: "0",
+    profile_id: "",
+    model: "",
+    compactor: "builtin",
+    source: "builtin",
+    summary: "",
+    updated_at: "",
+    window: 200000,
+    used: 0,
+    output_reserve: 16000,
+    headroom: 200000,
+    compression_count: 0,
+    estimated: true,
+    categories: [],
+  };
+}
+
 function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Record<string, unknown>): unknown {
   const task = q.get("task") ?? undefined;
 
@@ -1522,6 +1561,18 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (!result.ok) throw new Error(result.error ?? swt("interface.m2810"));
     const task = mockTasks.find((item) => item.id === seg[1]);
     return { id: seg[1], paused: Boolean(task?.paused), queued: Boolean(task?.queued), status: task?.status ?? "" };
+  }
+  if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "controls" && seg[4] === "context") {
+    return mockChatContext();
+  }
+  if (seg[0] === "conversations" && seg[2] === "controls" && seg[3] === "context") {
+    return mockChatContext();
+  }
+  if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "controls" && seg.length === 4) {
+    return mockChatControls(seg[1], Number(q.get("seg")) || 0);
+  }
+  if (seg[0] === "conversations" && seg[2] === "controls" && seg.length === 3) {
+    return mockChatControls("0", 0, seg[1]);
   }
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "status") return { running: false };
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };

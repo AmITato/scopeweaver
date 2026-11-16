@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { normalizeChatControlState } from "@/lib/chat-controls-state";
 import { chatControlsBase, chatControlsURL } from "@/lib/chat-commands";
+import { normalizeChatContextView } from "@/lib/chat-context-view";
 import { newChatID } from "@/lib/chat-attachment-state";
 import { http, HTTPError } from "@/lib/api";
 import type {
@@ -64,7 +66,8 @@ export function useChatControls(ref: ChatSessionRef | null) {
     const request = ++generation.current;
     try {
       const next = await http<ChatControlState>(chatControlsURL(ref));
-      if (active.current === key && generation.current === request) setSnapshot({ key, state: next });
+      if (active.current === key && generation.current === request)
+        setSnapshot({ key, state: normalizeChatControlState(next, ref) });
     } catch (error) {
       if (active.current === key && generation.current === request)
         setSnapshot((current) => ({
@@ -114,7 +117,7 @@ export function useChatControls(ref: ChatSessionRef | null) {
     // Stable requested binding (chatControlsBase of the current ref). Lets consumers
     // distinguish initial hydration of one binding from a real binding/session switch.
     key,
-    context: () => http<ChatContextView>(chatControlsURL(ref!, "context")),
+    context: async () => normalizeChatContextView(await http<ChatContextView>(chatControlsURL(ref!, "context"))),
     compact: async (options: ChatCompactOptions) => {
       if (!ref) throw new Error("Chat session unavailable");
       const fingerprint = JSON.stringify([key, "compact", options]);
@@ -127,7 +130,7 @@ export function useChatControls(ref: ChatSessionRef | null) {
           expected_revision: state?.revision,
         });
         requests.delete(fingerprint);
-        return result;
+        return normalizeChatContextView(result);
       } catch (error) {
         if (error instanceof HTTPError && error.status >= 400 && error.status < 500) requests.delete(fingerprint);
         throw error;

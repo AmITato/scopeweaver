@@ -173,7 +173,7 @@ export const ChatContextInspector = forwardRef<ChatContextHandle, { controls: Co
           <dt>{t("interface.chatContextReserve")}</dt>
           <dd>
             {view
-              ? `${view.output_reserve.toLocaleString()}${view.reserve_estimated ? ` · ${t("interface.chatContextEstimated")}` : ""}`
+              ? `${(view.output_reserve ?? 0).toLocaleString()}${view.reserve_estimated ? ` · ${t("interface.chatContextEstimated")}` : ""}`
               : "—"}
           </dd>
           <dt>{t("interface.chatContextInput")}</dt>

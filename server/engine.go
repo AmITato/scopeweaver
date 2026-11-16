@@ -140,6 +140,15 @@ type Engine struct {
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 	residueWarn  sync.Map // taskID -> int, last open-obvious count already warned (dedupes completion refusals)
 
+	// rotating is the coordinated egress-rotation barrier (docs/opsec-blend.md §8).
+	// While set, workers claim no new intents and the planner starts no round, so a
+	// relay change never cuts a mid-chain request or the model stream.
+	rotating atomic.Bool
+	// rotationMu orders the barrier flip against a planner round's admission, so a
+	// round cannot slip past the barrier check and start an LLM call after WaitIdle
+	// already saw an idle engine.
+	rotationMu sync.RWMutex
+
 	// Task-level timeout coordination:
 	settling     sync.Map // taskID -> bool: settling has begun; stop dispatching/claiming new intents.
 	deadline     sync.Map // taskID -> Unix deadline: stamped on first execution; zero/missing means unlimited.
@@ -351,6 +360,90 @@ func (e *Engine) execContextFor(parent context.Context, taskID string) context.C
 func (e *Engine) IsPaused(taskID string) bool {
 	v, ok := e.paused.Load(taskID)
 	return ok && v.(bool)
+}
+
+// SetRotating installs or clears the egress-rotation barrier. While set, claimNext
+// hands out no intent and the planner starts no round; in-flight work keeps running
+// so WaitIdle can drain it before the relay changes.
+func (e *Engine) SetRotating(on bool) { e.rotating.Store(on) }
+
+// Rotating reports whether an egress rotation currently owns the barrier.
+func (e *Engine) Rotating() bool { return e.rotating.Load() }
+
+// beginRotation claims the barrier exactly once. false means a rotation is already
+// in progress; the caller must not wait and must not clear the other holder's flag.
+func (e *Engine) beginRotation() bool {
+	e.rotationMu.Lock()
+	defer e.rotationMu.Unlock()
+	if e.rotating.Load() {
+		return false
+	}
+	e.rotating.Store(true)
+	return true
+}
+
+// beginPlanningOperation admits a planning round only when no rotation flipped the
+// barrier between the caller's guard and admission. With the barrier held, the
+// round's inflight count is visible to WaitIdle before it can start an LLM call.
+func (e *Engine) beginPlanningOperation(taskID string) bool {
+	e.rotationMu.RLock()
+	defer e.rotationMu.RUnlock()
+	if e.rotating.Load() {
+		return false
+	}
+	return e.beginTaskOperation(taskID)
+}
+
+// WaitIdle blocks until no worker execution is registered and no LLM call is in
+// flight, polling every 100ms. The caller's context bounds the wait, so a stuck
+// worker makes the rotation abort instead of stalling the API forever.
+func (e *Engine) WaitIdle(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if e.rotationIdle() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// rotationIdle reports whether no target work or model call is currently live.
+// The inflight counter closes the small gap between a worker admitting a step and
+// registering its work handle (and the equivalent planner gap before BeginLLMCall).
+func (e *Engine) rotationIdle() bool {
+	e.workMu.Lock()
+	work := len(e.work)
+	e.workMu.Unlock()
+	if work > 0 {
+		return false
+	}
+	busy := false
+	e.llmCalls.Range(func(_, v any) bool {
+		if atomic.LoadInt64(v.(*int64)) > 0 {
+			busy = true
+			return false
+		}
+		return true
+	})
+	if busy {
+		return false
+	}
+	e.inflight.Range(func(_, v any) bool {
+		if atomic.LoadInt64(v.(*int64)) > 0 {
+			busy = true
+			return false
+		}
+		return true
+	})
+	return !busy
 }
 
 // Started reports whether the engine loops are running for a task.
@@ -825,104 +918,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	defer heartbeat.Stop()
 
 	// runRound executes planning with debounce and guards; src distinguishes trigger sources in logs.
-	runRound := func(src string) {
-		// debounce: coalesce a burst of changes into one planning round
-		timer := time.NewTimer(e.debounce)
-	drain:
-		for {
-			select {
-			case <-t.notify:
-			case <-timer.C:
-				break drain
-			}
-		}
-		planner, _ := e.snapshotFor(t)
-		if planner == nil {
-			return // idle until LLM configured
-		}
-		if e.IsPaused(t.ID) {
-			return // user-paused: don't plan
-		}
-		if e.IsDeleting(t.ID) {
-			return
-		}
-		// terminal task (goals all met → done, or failed): the run is over. A
-		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
-		// re-plan (it would burn an LLM round and re-confirm a settled result).
-		if isTerminalStatus(t.lifecycleSnapshot().Status) {
-			return
-		}
-		// Discard ordinary wakeups during timeout settlement. Worker writebacks and Resume notifications
-		// cannot start normal planning; settleTask directly drives the final round instead.
-		if e.isSettling(t.ID) {
-			return
-		}
-		// Goalless/manual-intent path: without open goals, do not run the planner, which could reassess met
-		// and cancel user-submitted intents. The frontier instead determines completion:
-		// open/running intents keep the task running quietly; an empty frontier completes it.
-		// This branch is pure Go, with no LLM calls or planning-round markers.
-		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
-			t.drainTriggers() // Discard accumulated done/finding triggers to prevent unbounded growth in long goalless sessions.
-			if active, err := t.Store.HasActiveIntent(); err == nil && !active {
-				// Obvious residue holds completion open on op tasks; the sweeper empties it.
-				if e.residueBlocks(t) {
-					return
-				}
-				// No open or running intents remain: finish with a guarded compare-and-swap to avoid overwriting
-				// concurrent pause, deletion, or timeout-settlement transitions.
-				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
-					log.Printf(locale.Text(locale.FromContext(ctx), "[goalless] task %s could not persist done state: %v"), t.ID, err)
-				} else if won {
-					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
-						Summary: locale.Text(locale.FromContext(ctx), "All goals were met and the directly submitted intent finished; task complete")})
-				}
-			}
-			return // The goalless branch never enters planner.Plan.
-		}
-		if !e.beginTaskOperation(t.ID) {
-			return
-		}
-		defer e.decInflight(t.ID)
-		e.stampFirstRun(t) // First actual planning stamps first_run_at and computes a deadline for timed tasks.
-		e.touch(t.ID)
-		emit := func(r db.Activity) { e.emitActivity(t, r) }
-		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // Cancellable by Pause and bounded by the task deadline.
-		if ectx.Err() != nil || e.IsDeleting(t.ID) {
-			return
-		}
-		log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning… (trigger: %s)"), t.ID, src)
-		// round marker: each Plan() is one planner round; emit a boundary so the
-		// UI can separate rounds in the transcript (kind='round').
-		e.emitActivity(t, db.Activity{Worker: "planner", Kind: "round",
-			Summary: fmt.Sprintf(locale.Text(locale.FromContext(ctx), "Planning round %d"), e.nextPlannerRound(t.ID))})
-		// what fired this round (worker done / finding; may be several — debounce
-		// coalesces a burst; empty for time/heartbeat wakes).
-		triggers := t.drainTriggers()
-		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
-		e.BeginLLMCall(t.ID)
-		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
-		e.EndLLMCall(t.ID)
-		switch {
-		case err != nil && ectx.Err() == nil:
-			log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning failed: %v"), t.ID, err)
-		case met:
-			log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s determined goals met: %s"), t.ID, reason)
-			if e.residueBlocks(t) {
-				break
-			}
-			// All goals met: persist done, which the frontend DTO prioritizes over runtime state.
-			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
-				log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s could not persist completion: %v"), t.ID, err)
-			}
-			// Once the task completes, immediately cancel running workers whose intent results are no longer needed.
-			// The next worker loop sees the terminal guard and claims no more intents. Cancelled workers follow
-			// the completed-task branch below and become stopped rather than blocked.
-			e.cancelExec(t.ID, agent.AbortGoalMet)
-		default:
-			log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning complete"), t.ID)
-		}
-		e.touch(t.ID)
-	}
+	runRound := func(src string) { e.planRound(ctx, t, src) }
 
 	for {
 		select {
@@ -937,6 +933,113 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// Rearm after every edge or heartbeat wake; any planning trigger restarts the idle interval.
 		resetPlannerTimer(heartbeat, interval)
 	}
+}
+
+// plannerRound runs one debounced planning round. It is separate from the loop so
+// the rotation barrier can be exercised without an LLM: while egress rotates, no
+// round starts and the next edge/heartbeat wake retries.
+func (e *Engine) planRound(ctx context.Context, t *Task, src string) {
+	// debounce: coalesce a burst of changes into one planning round
+	timer := time.NewTimer(e.debounce)
+drain:
+	for {
+		select {
+		case <-t.notify:
+		case <-timer.C:
+			break drain
+		}
+	}
+	// A rotation is a wave boundary: drain in-flight work, then rotate. The next
+	// edge/heartbeat wake starts a fresh round on the new exit.
+	if e.Rotating() {
+		return
+	}
+	planner, _ := e.snapshotFor(t)
+	if planner == nil {
+		return // idle until LLM configured
+	}
+	if e.IsPaused(t.ID) {
+		return // user-paused: don't plan
+	}
+	if e.IsDeleting(t.ID) {
+		return
+	}
+	// terminal task (goals all met → done, or failed): the run is over. A
+	// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
+	// re-plan (it would burn an LLM round and re-confirm a settled result).
+	if isTerminalStatus(t.lifecycleSnapshot().Status) {
+		return
+	}
+	// Discard ordinary wakeups during timeout settlement. Worker writebacks and Resume notifications
+	// cannot start normal planning; settleTask directly drives the final round instead.
+	if e.isSettling(t.ID) {
+		return
+	}
+	// Goalless/manual-intent path: without open goals, do not run the planner, which could reassess met
+	// and cancel user-submitted intents. The frontier instead determines completion:
+	// open/running intents keep the task running quietly; an empty frontier completes it.
+	// This branch is pure Go, with no LLM calls or planning-round markers.
+	if open, err := t.Store.HasOpenGoal(); err == nil && !open {
+		t.drainTriggers() // Discard accumulated done/finding triggers to prevent unbounded growth in long goalless sessions.
+		if active, err := t.Store.HasActiveIntent(); err == nil && !active {
+			// Obvious residue holds completion open on op tasks; the sweeper empties it.
+			if e.residueBlocks(t) {
+				return
+			}
+			// No open or running intents remain: finish with a guarded compare-and-swap to avoid overwriting
+			// concurrent pause, deletion, or timeout-settlement transitions.
+			if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
+				log.Printf(locale.Text(locale.FromContext(ctx), "[goalless] task %s could not persist done state: %v"), t.ID, err)
+			} else if won {
+				e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
+					Summary: locale.Text(locale.FromContext(ctx), "All goals were met and the directly submitted intent finished; task complete")})
+			}
+		}
+		return // The goalless branch never enters planner.Plan.
+	}
+	if !e.beginPlanningOperation(t.ID) {
+		return
+	}
+	defer e.decInflight(t.ID)
+	e.stampFirstRun(t) // First actual planning stamps first_run_at and computes a deadline for timed tasks.
+	e.touch(t.ID)
+	emit := func(r db.Activity) { e.emitActivity(t, r) }
+	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // Cancellable by Pause and bounded by the task deadline.
+	if ectx.Err() != nil || e.IsDeleting(t.ID) {
+		return
+	}
+	log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning… (trigger: %s)"), t.ID, src)
+	// round marker: each Plan() is one planner round; emit a boundary so the
+	// UI can separate rounds in the transcript (kind='round').
+	e.emitActivity(t, db.Activity{Worker: "planner", Kind: "round",
+		Summary: fmt.Sprintf(locale.Text(locale.FromContext(ctx), "Planning round %d"), e.nextPlannerRound(t.ID))})
+	// what fired this round (worker done / finding; may be several — debounce
+	// coalesces a burst; empty for time/heartbeat wakes).
+	triggers := t.drainTriggers()
+	taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+	e.BeginLLMCall(t.ID)
+	met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
+	e.EndLLMCall(t.ID)
+	switch {
+	case err != nil && ectx.Err() == nil:
+		log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning failed: %v"), t.ID, err)
+	case met:
+		log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s determined goals met: %s"), t.ID, reason)
+		if e.residueBlocks(t) {
+			break
+		}
+		// All goals met: persist done, which the frontend DTO prioritizes over runtime state.
+		if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
+			log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s could not persist completion: %v"), t.ID, err)
+		}
+		// Once the task completes, immediately cancel running workers whose intent results are no longer needed.
+		// The next worker loop sees the terminal guard and claims no more intents. Cancelled workers follow
+		// the completed-task branch below and become stopped rather than blocked.
+		e.cancelExec(t.ID, agent.AbortGoalMet)
+	default:
+		log.Printf(locale.Text(locale.FromContext(ctx), "[planner] task %s planning complete"), t.ID)
+	}
+	e.touch(t.ID)
 }
 
 func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
@@ -1298,6 +1401,11 @@ func (e *Engine) residueBlocks(t *Task) bool {
 // denied intent stays open for a free worker. Intent hosts come from its anchored
 // assets; an intent with no resolvable host is claimed without a lease.
 func (e *Engine) claimNext(t *Task, name string) (*db.Node, []string, bool) {
+	// Egress rotation is a wave boundary: no new intent may start while the exit
+	// changes. Workers retry after the barrier clears.
+	if e.Rotating() {
+		return nil, nil, false
+	}
 	fr, _ := t.Store.Frontier(20)
 	taskNum, _ := strconv.ParseInt(t.ID, 10, 64)
 	// Passive phase: only intents explicitly tagged passive may run. Untagged

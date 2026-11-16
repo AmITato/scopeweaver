@@ -4,6 +4,15 @@ This is the translated upstream ARTEX history from baseline `160fe13`, preservin
 
 ## [Unreleased]
 
+### OpenCode SDK bridge runtime 2.3.0 (#67)
+
+#### Security
+- The native OpenCode bridge runtime moves from CLI/client/SDK 2.1.4 to 2.3.0 (`effect` 4.1.0). Its `@opencode/core` now resolves the patched `zod` 4.6.7, so the default runtime's validation path is no longer affected by GHSA-mrhx-c7xc-m3w5. Issue #67 stays open: the legacy runtime's `@opencode-ai/plugin` 1.19.4 pins `zod` 4.1.8, and `gitlab-ai-provider` 6.24.0 still requires `zod ^3.25.76`, so `bun audit` still reports the advisory.
+
+#### Changed
+- The bridge and the server accept only native runtime 2.3.0 (legacy 1.19.4 is unchanged); a bridge still running 2.1.4 is reported as an unsupported runtime. Restart the bridge after updating.
+- Runtime 2.3.0 reports the bridge's own interruption of a captured host tool as an `unknown` failure carrying `CAPTURE_INTERRUPTED` instead of `aborted`; the bridge accepts both, and only after it interrupted the session itself.
+
 ### Windows PostgreSQL setup (#79)
 
 #### Fixed

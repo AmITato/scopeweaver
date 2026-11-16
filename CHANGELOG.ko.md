@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### OpenCode SDK 브리지 런타임 2.3.0 (#67)
+
+#### 보안
+- native OpenCode 브리지 런타임을 CLI·클라이언트·SDK 2.1.4에서 2.3.0(`effect` 4.1.0)으로 올렸습니다. `@opencode/core`가 패치된 `zod` 4.6.7을 쓰므로 기본 런타임의 검증 경로는 더 이상 GHSA-mrhx-c7xc-m3w5의 영향을 받지 않습니다. 이슈 #67은 열어 둡니다. legacy 런타임의 `@opencode-ai/plugin` 1.19.4가 `zod` 4.1.8을 고정하고, `gitlab-ai-provider` 6.24.0이 여전히 `zod ^3.25.76`을 요구해 `bun audit`은 계속 이 권고를 보고합니다.
+
+#### 변경
+- 브리지와 서버는 native 런타임 2.3.0만 받습니다(legacy 1.19.4는 그대로입니다). 2.1.4로 실행 중인 브리지는 지원하지 않는 런타임으로 보고되므로, 업데이트 후 브리지를 다시 시작하세요.
+- 런타임 2.3.0은 브리지가 캡처한 호스트 도구를 직접 중단할 때 `aborted` 대신 `CAPTURE_INTERRUPTED`가 담긴 `unknown` 실패를 보냅니다. 브리지는 자신이 세션을 중단한 경우에만 두 형태를 모두 받아들입니다.
+
 ### Windows PostgreSQL 설정 (#79)
 
 #### 수정
